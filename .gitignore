@@ -1,0 +1,32 @@
+# Compiled output
+dist/
+
+# Dependencies
+node_modules/
+
+# Secrets
+.env
+.env.local
+.env.*.local
+CLAUDE.local.md
+*.key
+
+# Local Claude Code settings
+.claude/
+
+# Packed tarballs
+*.tgz
+
+# Logs
+npm-debug.log*
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo

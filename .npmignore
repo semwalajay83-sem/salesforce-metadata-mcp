@@ -1,0 +1,39 @@
+# Source files — publish compiled dist/ only
+src/
+tsconfig.json
+*.ts
+!dist/**/*.d.ts
+
+# Tests
+test/
+tests/
+*.test.js
+*.spec.js
+*.test.ts
+*.spec.ts
+
+# Debug and log files
+*.log
+npm-debug.log*
+.npm/
+
+# Source maps — not needed by consumers
+dist/**/*.js.map
+dist/**/*.d.ts.map
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Internal docs — not part of the published API surface
+QUICKSTART.md
+
+# Build and dev tooling
+.github/
+.vscode/
+*.tgz
+
+# OS files
+.DS_Store
+Thumbs.db

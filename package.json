@@ -1,0 +1,118 @@
+{
+  "name": "salesforce-metadata-mcp",
+  "version": "2.6.5",
+  "description": "The most comprehensive Salesforce MCP server: 132 tools covering custom objects, flows, Apex, LWC, page layouts, permissions, profiles, users, reports, dashboards, Experience Cloud, OmniStudio, OmniChannel, Agentforce, Einstein AI, audit trail, territories, monitoring, and more.",
+  "license": "MIT",
+  "private": false,
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "salesforce-metadata-mcp": "dist/index.js"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/semwalajay83-sem/salesforce-metadata-mcp.git"
+  },
+  "homepage": "https://github.com/semwalajay83-sem/salesforce-metadata-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/semwalajay83-sem/salesforce-metadata-mcp/issues"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/semwalajay83-sem"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "SETUP.md",
+    "TOOLS.md",
+    "AGENTFORCE.md",
+    "APEX_LWC.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "salesforce",
+    "mcp",
+    "claude",
+    "ai",
+    "metadata",
+    "apex",
+    "lwc",
+    "agentforce",
+    "anthropic",
+    "model-context-protocol",
+    "salesforce-dx",
+    "crm",
+    "automation",
+    "lightning",
+    "permission-set",
+    "page-layout",
+    "reports",
+    "dashboard",
+    "experience-cloud",
+    "community",
+    "users",
+    "bulk-api",
+    "visualforce",
+    "aura",
+    "formula-fields",
+    "omnistudio",
+    "omniscript",
+    "flexcard",
+    "dataraptor",
+    "integration-procedure",
+    "omnichannel",
+    "service-cloud",
+    "field-service",
+    "messaging",
+    "live-chat",
+    "skill-routing",
+    "presence",
+    "einstein",
+    "next-best-action",
+    "audit-trail",
+    "login-history",
+    "lightning-page",
+    "flexipage",
+    "app-builder",
+    "letterhead",
+    "soql",
+    "github-actions",
+    "ci-cd",
+    "territory-management",
+    "enterprise-territory",
+    "sandbox",
+    "scratch-org",
+    "change-data-capture",
+    "platform-event-subscription",
+    "apex-rest",
+    "document-generation",
+    "omnistudio-export",
+    "rollup-summary",
+    "external-id",
+    "apex-batch",
+    "apex-scheduler",
+    "org-limits",
+    "forecast-hierarchy"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "jszip": "3.10.1",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3"
+  }
+}
