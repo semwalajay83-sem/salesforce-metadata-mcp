@@ -47,7 +47,9 @@ See [SETUP.md](SETUP.md) for all authentication methods and detailed setup instr
 
 ---
 
-## Tools (60+)
+## Tools — 212 total
+
+Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with parameters and example prompts.
 
 ### Objects & Fields
 | Tool | Description |
