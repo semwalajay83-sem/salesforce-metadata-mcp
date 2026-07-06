@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.6.7] - 2026-07-06
+
+### Docs-only release (no functional changes)
+
+- npm README refreshed: the "Tools (60+)" heading above the tool list now correctly says 212 (the fix landed in git after 2.6.6 was published, so the npm page kept showing the stale heading)
+- npm package description shortened below 250 characters so npm search no longer truncates it mid-word
+- Added `.github/FUNDING.yml` for the GitHub Sponsors button
+
 ## [2.6.6] - 2026-07-06
 
 ### Public release housekeeping (no functional changes)
