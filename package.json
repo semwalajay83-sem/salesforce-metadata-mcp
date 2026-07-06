@@ -1,7 +1,8 @@
 {
   "name": "salesforce-metadata-mcp",
   "version": "2.6.5",
-  "description": "The most comprehensive Salesforce MCP server: 132 tools covering custom objects, flows, Apex, LWC, page layouts, permissions, profiles, users, reports, dashboards, Experience Cloud, OmniStudio, OmniChannel, Agentforce, Einstein AI, audit trail, territories, monitoring, and more.",
+  "description": "The most comprehensive Salesforce MCP server: 212 tools covering custom objects, flows, Apex, LWC, page layouts, permissions, profiles, users, reports, dashboards, Experience Cloud, OmniStudio, OmniChannel, Agentforce, Einstein AI, audit trail, territories, monitoring, and more.",
+  "mcpName": "io.github.semwalajay83-sem/salesforce-metadata-mcp",
   "license": "MIT",
   "private": false,
   "type": "module",

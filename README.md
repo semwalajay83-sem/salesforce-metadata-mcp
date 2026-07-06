@@ -1,10 +1,11 @@
 # salesforce-metadata-mcp
 
-[![Version](https://img.shields.io/badge/version-2.5.5-blue.svg)](https://npmjs.com/package/salesforce-metadata-mcp)
+[![npm version](https://img.shields.io/npm/v/salesforce-metadata-mcp.svg)](https://npmjs.com/package/salesforce-metadata-mcp)
+[![npm downloads](https://img.shields.io/npm/dm/salesforce-metadata-mcp.svg)](https://npmjs.com/package/salesforce-metadata-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io)
 
-**The most comprehensive Salesforce metadata and development MCP server.** 60+ tools for building, configuring, and automating Salesforce orgs directly from Claude or any MCP client.
+**The most comprehensive Salesforce metadata and development MCP server.** 212 tools for building, configuring, and automating Salesforce orgs directly from Claude or any MCP client.
 
 ---
 

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.semwalajay83-sem/salesforce-metadata-mcp",
+  "description": "212 Salesforce tools: metadata, flows, Apex, LWC, Agentforce, OmniStudio, reports, permissions.",
+  "repository": {
+    "url": "https://github.com/semwalajay83-sem/salesforce-metadata-mcp",
+    "source": "github"
+  },
+  "version": "2.6.6",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "salesforce-metadata-mcp",
+      "version": "2.6.6",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "SF_INSTANCE_URL",
+          "description": "Salesforce org URL, e.g. https://yourorg.my.salesforce.com",
+          "isRequired": true,
+          "isSecret": false
+        },
+        {
+          "name": "SF_ACCESS_TOKEN",
+          "description": "Salesforce access token (or use SF_ALIAS / JWT variables instead)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "SF_ALIAS",
+          "description": "Salesforce CLI org alias (alternative to SF_ACCESS_TOKEN)",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}
