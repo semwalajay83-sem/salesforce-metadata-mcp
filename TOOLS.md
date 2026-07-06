@@ -1,6 +1,6 @@
 # Tools Reference
 
-Complete documentation for all 60+ tools in `salesforce-metadata-mcp`.
+Complete documentation for all 212 tools in `salesforce-metadata-mcp`.
 
 ---
 
@@ -246,4 +246,4 @@ Generates a complete MCP server project on disk.
 
 ---
 
-*For the complete list of all 60+ tools, see [README.md](README.md).*
+*For the complete list of all 212 tools, see [README.md](README.md).*

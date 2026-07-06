@@ -1,5 +1,5 @@
 /**
- * Comprehensive test suite for salesforce-metadata-mcp — all 209 tools
+ * Comprehensive test suite for salesforce-metadata-mcp — all 212 tools
  * Target org: your dev/test org (never a production org)
  * Run: SF_ALIAS=<alias> SF_INSTANCE_URL=<your-org-url> node test-suite.mjs
  */

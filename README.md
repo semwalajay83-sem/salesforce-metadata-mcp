@@ -198,7 +198,7 @@ See [SETUP.md](SETUP.md) for all authentication methods and detailed setup instr
 ## Documentation
 
 - [SETUP.md](SETUP.md) — Prerequisites, authentication, Claude configuration
-- [TOOLS.md](TOOLS.md) — All 60+ tools with full parameter documentation
+- [TOOLS.md](TOOLS.md) — All 212 tools with full parameter documentation
 - [AGENTFORCE.md](AGENTFORCE.md) — Agentforce agent creation guide
 - [APEX_LWC.md](APEX_LWC.md) — Apex and LWC development guide
 - [CHANGELOG.md](CHANGELOG.md) — Version history

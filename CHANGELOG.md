@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.6.6] - 2026-07-06
+
+### Public release housekeeping (no functional changes)
+
+- GitHub repository is now public: https://github.com/semwalajay83-sem/salesforce-metadata-mcp
+- package.json: added `repository`, `homepage`, `bugs`, and `mcpName` fields; fixed `funding` URL
+- Corrected tool count everywhere to 212 (verified against registered tools); npm description, README, TOOLS.md, QUICKSTART.md updated
+- README badges now track the live npm version and downloads
+- Added `server.json` for the official MCP registry
+- Removed hardcoded org URLs and credentials from test scripts (now read from `.env.local` / environment)
+
 ## [2.6.5] - 2026-06-17
 
 ### Fix — Agent creation stops after shell created (topic/action/planner never called)

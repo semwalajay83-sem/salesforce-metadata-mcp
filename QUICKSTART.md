@@ -1,7 +1,7 @@
 # Get Started in 5 Minutes
 
 **salesforce-metadata-mcp** lets you build and configure Salesforce orgs by talking to Claude.  
-60+ tools — create objects, fields, flows, Apex classes, LWC, Agentforce agents, and more — all from natural language.
+212 tools — create objects, fields, flows, Apex classes, LWC, Agentforce agents, and more — all from natural language.
 
 **No code required. No Salesforce CLI required.**
 
