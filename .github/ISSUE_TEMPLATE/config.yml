@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Setup help
+    url: https://github.com/semwalajay83-sem/salesforce-metadata-mcp/blob/main/SETUP.md
+    about: Check the setup guide for authentication and configuration questions first.

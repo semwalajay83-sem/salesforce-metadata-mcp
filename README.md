@@ -207,6 +207,12 @@ Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with param
 
 ---
 
+## Bugs & Feature Requests
+
+Found a bug or want a new tool? [Open an issue](https://github.com/semwalajay83-sem/salesforce-metadata-mcp/issues/new/choose) — there are templates for bug reports and feature requests. Please include the package version and the tool name, and remove any org URLs or credentials before posting.
+
+---
+
 ## License
 
 MIT

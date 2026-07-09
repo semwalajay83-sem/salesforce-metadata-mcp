@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a problem with salesforce-metadata-mcp
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill in the details below so it can be reproduced and fixed quickly.
+  - type: input
+    id: version
+    attributes:
+      label: Package version
+      description: Run `npm ls salesforce-metadata-mcp` or check your MCP config
+      placeholder: "2.6.7"
+    validations:
+      required: true
+  - type: input
+    id: tool
+    attributes:
+      label: Tool name
+      description: Which MCP tool failed (if applicable)?
+      placeholder: "sf_create_flow"
+  - type: dropdown
+    id: client
+    attributes:
+      label: MCP client
+      options:
+        - Claude Desktop
+        - Claude Code
+        - Cursor
+        - Other (mention below)
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        1. Asked Claude to "create a flow that..."
+        2. Expected the flow to be created
+        3. Got error: ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output / logs
+      description: Paste the error message or relevant log output. Remove any org URLs, usernames, or tokens.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed all credentials, org URLs, and usernames from this report
+          required: true
