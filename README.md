@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io)
 
-**The most comprehensive Salesforce metadata and development MCP server.** 212 tools for building, configuring, and automating Salesforce orgs directly from Claude or any MCP client.
+**The only Salesforce MCP server that builds Agentforce agents, OmniStudio components, and DevOps Center pipelines** — alongside a complete daily developer loop (schema describe, Apex read, debug logs) and 219 tools total for building, configuring, and automating Salesforce orgs directly from Claude or any MCP client.
 
 ---
 
@@ -47,7 +47,7 @@ See [SETUP.md](SETUP.md) for all authentication methods and detailed setup instr
 
 ---
 
-## Tools — 212 total
+## Tools — 219 total
 
 Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with parameters and example prompts.
 
@@ -68,6 +68,7 @@ Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with param
 | `sf_create_page_layout` | Create Page Layouts with sections and fields |
 | `sf_create_sharing_rule` | Create criteria or ownership sharing rules |
 | `sf_create_field_dependency` | Create controlling/dependent picklist dependency |
+| `sf_describe_object` | Read an object's full schema — fields, types, picklist values, child relationships, record types |
 
 ### Automation
 | Tool | Description |
@@ -93,6 +94,7 @@ Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with param
 | `sf_create_role` | Create roles in the role hierarchy |
 | `sf_create_queue` | Create queues with members and objects |
 | `sf_create_named_credential` | Create Named Credentials for callouts |
+| `sf_get_field_permissions` | Audit current field-level security grants across Profiles and Permission Sets |
 
 ### UI & Experience
 | Tool | Description |
@@ -115,6 +117,11 @@ Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with param
 | `sf_create_apex_test_class` | Deploy test classes, optionally run tests |
 | `sf_run_apex_tests` | Run test classes and get pass/fail results |
 | `sf_execute_anonymous_apex` | Execute anonymous Apex and see output |
+| `sf_get_apex_class` | Read the source of an existing Apex class |
+| `sf_get_apex_trigger` | Read the source of an existing Apex trigger |
+| `sf_enable_debug_logs` | Turn on Apex debug logging for a user (TraceFlag) |
+| `sf_get_debug_logs` | List recent Apex debug logs |
+| `sf_get_debug_log_body` | Read the full content of a debug log |
 
 ### LWC Development
 | Tool | Description |
@@ -200,7 +207,7 @@ Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with param
 ## Documentation
 
 - [SETUP.md](SETUP.md) — Prerequisites, authentication, Claude configuration
-- [TOOLS.md](TOOLS.md) — All 212 tools with full parameter documentation
+- [TOOLS.md](TOOLS.md) — All 219 tools with full parameter documentation
 - [AGENTFORCE.md](AGENTFORCE.md) — Agentforce agent creation guide
 - [APEX_LWC.md](APEX_LWC.md) — Apex and LWC development guide
 - [CHANGELOG.md](CHANGELOG.md) — Version history

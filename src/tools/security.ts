@@ -9,6 +9,7 @@ import {
   CreateCustomPermissionSchema,
   CreateMutingPermSetSchema,
   CreatePermSetGroupSchema,
+  GetFieldPermissionsSchema,
 } from "../schemas/index.js";
 import {
   getAuth,
@@ -21,6 +22,7 @@ import {
   createCustomPermission,
   createMutingPermSetSimple,
   createPermSetGroupSimple,
+  getFieldPermissions,
 } from "../services/salesforce.js";
 import { resultContent } from "./utils.js";
 
@@ -156,6 +158,24 @@ profiles: array of {profileName, readable, editable}`,
     async (params) => {
       const auth = await getAuth();
       const result = await createFieldLevelSecurity(auth, params);
+      return resultContent(result);
+    }
+  );
+
+  server.registerTool(
+    "sf_get_field_permissions",
+    {
+      title: "Get Field Level Security (Audit)",
+      description: `Reads the current field-level security grants for a field across all Profiles and Permission Sets that reference it, via the FieldPermissions query object. Use to audit who can currently see or edit a field before changing access, or to answer "which profiles can edit this field?". Complements sf_create_field_level_security, which sets grants but doesn't report the current state.
+
+objectName: object API name, e.g. 'Account'
+fieldName: field API name, e.g. 'Revenue__c'`,
+      inputSchema: GetFieldPermissionsSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async (params) => {
+      const auth = await getAuth();
+      const result = await getFieldPermissions(auth, params);
       return resultContent(result);
     }
   );

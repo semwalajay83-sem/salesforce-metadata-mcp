@@ -6,8 +6,10 @@ import {
   RunApexTestsSchema,
   ExecuteAnonymousApexSchema,
   ScanApexAntipatternsSchema,
+  GetApexClassSchema,
+  GetApexTriggerSchema,
 } from "../schemas/index.js";
-import { getAuth, scanApexAntipatterns } from "../services/salesforce.js";
+import { getAuth, scanApexAntipatterns, getApexClass, getApexTrigger } from "../services/salesforce.js";
 import {
   buildApexClassZip,
   buildApexTriggerZip,
@@ -151,6 +153,36 @@ maxClasses: maximum classes to scan (default 20, max 200)`,
     async (params) => {
       const auth = await getAuth();
       const result = await scanApexAntipatterns(auth, params);
+      return resultContent(result);
+    }
+  );
+
+  server.registerTool(
+    "sf_get_apex_class",
+    {
+      title: "Get Apex Class Source",
+      description: `Retrieves the full source code of an existing Apex class by exact name, via the Tooling API. Use before modifying a class (to see current logic), when debugging, or when a user asks "show me the X class" / "what does this class do". Returns the class body, API version, and status. Not to be confused with sf_create_apex_class, which deploys new or updated code — this tool only reads.`,
+      inputSchema: GetApexClassSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async (params) => {
+      const auth = await getAuth();
+      const result = await getApexClass(auth, params);
+      return resultContent(result);
+    }
+  );
+
+  server.registerTool(
+    "sf_get_apex_trigger",
+    {
+      title: "Get Apex Trigger Source",
+      description: `Retrieves the full source code of an existing Apex trigger by exact name, via the Tooling API. Returns the trigger body, the object it fires on, its active status, and which trigger events (before/after insert/update/delete/undelete) it's registered for. Use before modifying a trigger, or when a user asks to see or explain an existing trigger.`,
+      inputSchema: GetApexTriggerSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async (params) => {
+      const auth = await getAuth();
+      const result = await getApexTrigger(auth, params);
       return resultContent(result);
     }
   );

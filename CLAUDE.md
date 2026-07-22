@@ -4,7 +4,7 @@
 An open-source npm MCP server (package: salesforce-metadata-mcp, npm user: semwalajay)
 that lets Claude create and manage Salesforce metadata via natural language.
 Public GitHub repo: https://github.com/semwalajay83-sem/salesforce-metadata-mcp
-Tool count: 212 (verify with the mock-server count script before quoting in docs).
+Tool count: 219 (verify with the mock-server count script before quoting in docs).
 
 ## CRITICAL RULES
 

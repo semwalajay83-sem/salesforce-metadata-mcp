@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
   "name": "io.github.semwalajay83-sem/salesforce-metadata-mcp",
-  "description": "212 Salesforce tools: metadata, flows, Apex, LWC, Agentforce, OmniStudio, reports, permissions.",
+  "description": "The only Salesforce MCP with Agentforce, OmniStudio & DevOps Center tools. 219 tools: metadata, flows, Apex (create + read), schema describe, debug logs, permissions, reports.",
   "repository": {
     "url": "https://github.com/semwalajay83-sem/salesforce-metadata-mcp",
     "source": "github"
   },
-  "version": "2.6.7",
+  "version": "2.7.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "salesforce-metadata-mcp",
-      "version": "2.6.7",
+      "version": "2.7.0",
       "transport": {
         "type": "stdio"
       },

@@ -3074,3 +3074,35 @@ export const CreateFlowFromXmlSchema = z.object({
   flowXml: z.string().min(1).describe("Complete Flow XML content (the full metadata file, starting with <?xml version...> or <Flow xmlns...>)"),
   activate: z.boolean().default(true).describe("Activate the flow after deployment (default: true). Set to false to deploy as inactive draft."),
 }).strict();
+
+// ─── CATEGORY K: Schema Introspection & Source Read ───────────────────────────
+
+export const DescribeObjectSchema = z.object({
+  objectApiName: z.string().min(1).describe("SObject API name to describe, e.g. 'Account', 'My_Object__c'"),
+  fieldsOnly: z.boolean().default(false).describe("If true, returns only the field list (name, label, type, required, picklist values) and omits child relationships/record type info — use for a smaller, faster response when you only need field names/types before a query or DML call."),
+}).strict();
+
+export const GetApexTriggerSchema = z.object({
+  triggerName: z.string().min(1).describe("Apex trigger name (exact match), e.g. 'AccountTrigger'"),
+}).strict();
+
+export const EnableDebugLogsSchema = z.object({
+  username: z.string().min(1).describe("Username of the user to trace, e.g. 'ajay@example.com'"),
+  durationMinutes: z.number().int().min(1).max(1440).default(30).describe("How long the trace flag stays active, in minutes (max 24 hours)"),
+  debugLevel: z.enum(["FINEST", "FINER", "FINE", "DEBUG", "INFO", "WARN", "ERROR"]).default("FINEST").describe("Apex code log granularity for the debug level (applies to ApexCode category; other categories default to a matching verbosity)"),
+}).strict();
+
+export const GetDebugLogsSchema = z.object({
+  username: z.string().optional().describe("Filter logs to this username (omit to list logs from all users)"),
+  operation: z.string().optional().describe("Filter by operation substring, e.g. 'execute_anonymous_apex'"),
+  limit: z.number().int().min(1).max(100).default(10).describe("Maximum number of log entries to return"),
+}).strict();
+
+export const GetDebugLogBodySchema = z.object({
+  logId: z.string().min(15).max(18).describe("ApexLog record ID from sf_get_debug_logs (15 or 18 chars). Logs are retained for 24 hours."),
+}).strict();
+
+export const GetFieldPermissionsSchema = z.object({
+  objectName: z.string().min(1).describe("Object API name, e.g. 'Account'"),
+  fieldName: z.string().min(1).describe("Field API name, e.g. 'Revenue__c' (without the object prefix)"),
+}).strict();

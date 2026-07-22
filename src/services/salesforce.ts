@@ -3280,6 +3280,21 @@ export async function getApexClass(auth: SalesforceAuth, params: Record<string, 
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
     }
 }
+export async function getApexTrigger(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
+    try {
+        const toolingBase = `${auth.instanceUrl}/services/data/v${API_VERSION}/tooling`;
+        const headers = { Authorization: `Bearer ${auth.accessToken}`, "Content-Type": "application/json" };
+        const safeName = params.triggerName.replace(/'/g, "\\'");
+        const resp = await fetchWithTimeout(`${toolingBase}/query?q=${encodeURIComponent(`SELECT Id, Name, Body, ApiVersion, Status, TableEnumOrId, UsageBeforeInsert, UsageAfterInsert, UsageBeforeUpdate, UsageAfterUpdate, UsageBeforeDelete, UsageAfterDelete, UsageAfterUndelete FROM ApexTrigger WHERE Name = '${safeName}'`)}`, { method: "GET", headers }, 30_000);
+        if (!resp.ok) return { success: false, message: `Tooling API error: HTTP ${resp.status}` };
+        const data = await resp.json();
+        if (!data.records?.length) return { success: false, message: `Apex trigger '${params.triggerName}' not found.` };
+        const trg = data.records[0];
+        return { success: true, message: `Found Apex trigger '${params.triggerName}' on ${trg.TableEnumOrId}.`, id: trg.Id, name: trg.Name, body: trg.Body, apiVersion: trg.ApiVersion, status: trg.Status, objectName: trg.TableEnumOrId };
+    } catch (err) {
+        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+    }
+}
 export async function getCodeCoverage(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const toolingBase = `${auth.instanceUrl}/services/data/v${API_VERSION}/tooling`;
@@ -3515,6 +3530,53 @@ export async function createPublicGroup(auth: SalesforceAuth, params: Record<str
             return { success: true, fullName: params.groupName, created: false, message: `Public group '${params.groupName}' already exists.` };
         }
         return { success: false, message: sanitizeError(msg) };
+    }
+}
+export async function describeObject(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
+    try {
+        const client = createClient(auth);
+        const resp = await client.get<Record<string, any>>(`/sobjects/${params.objectApiName}/describe`);
+        const d = resp.data;
+        const fields = (d.fields ?? []).map((f: any) => ({
+            name: f.name,
+            label: f.label,
+            type: f.type,
+            required: f.nillable === false && !f.defaultedOnCreate,
+            unique: f.unique,
+            length: f.length,
+            precision: f.precision,
+            scale: f.scale,
+            picklistValues: f.type === "picklist" || f.type === "multipicklist"
+                ? (f.picklistValues ?? []).filter((pv: any) => pv.active).map((pv: any) => pv.value)
+                : undefined,
+            referenceTo: f.referenceTo && f.referenceTo.length > 0 ? f.referenceTo : undefined,
+            relationshipName: f.relationshipName ?? undefined,
+        }));
+        if (params.fieldsOnly) {
+            return { success: true, objectApiName: d.name, label: d.label, fields, message: `${fields.length} field(s) on ${d.name}.` };
+        }
+        const childRelationships = (d.childRelationships ?? [])
+            .filter((cr: any) => cr.relationshipName)
+            .map((cr: any) => ({ childSObject: cr.childSObject, field: cr.field, relationshipName: cr.relationshipName }));
+        const recordTypeInfos = (d.recordTypeInfos ?? []).map((rt: any) => ({ name: rt.name, recordTypeId: rt.recordTypeId, active: rt.active, defaultRecordTypeMapping: rt.defaultRecordTypeMapping }));
+        return {
+            success: true,
+            objectApiName: d.name,
+            label: d.label,
+            labelPlural: d.labelPlural,
+            keyPrefix: d.keyPrefix,
+            custom: d.custom,
+            createable: d.createable,
+            updateable: d.updateable,
+            deletable: d.deletable,
+            queryable: d.queryable,
+            fields,
+            childRelationships,
+            recordTypeInfos,
+            message: `Describe complete for ${d.name}: ${fields.length} field(s), ${childRelationships.length} child relationship(s), ${recordTypeInfos.length} record type(s).`,
+        };
+    } catch (err) {
+        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
     }
 }
 export async function queryRecords(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
@@ -5058,6 +5120,48 @@ export async function searchApex(auth: SalesforceAuth, params: Record<string, an
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
     }
 }
+export async function enableDebugLogs(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
+    try {
+        const toolingBase = `${auth.instanceUrl}/services/data/v${API_VERSION}/tooling`;
+        const headers = { Authorization: `Bearer ${auth.accessToken}`, "Content-Type": "application/json" };
+        const safeUsername = String(params.username).replace(/'/g, "\\'");
+
+        const userResp = await fetchWithTimeout(`${auth.instanceUrl}/services/data/v${API_VERSION}/query?q=${encodeURIComponent(`SELECT Id FROM User WHERE Username = '${safeUsername}'`)}`, { method: "GET", headers }, 30_000);
+        if (!userResp.ok) return { success: false, message: `Failed to look up user: HTTP ${userResp.status}` };
+        const userData = await userResp.json();
+        if (!userData.records?.length) return { success: false, message: `No user found with username '${params.username}'.` };
+        const userId = userData.records[0].Id;
+
+        const level = params.debugLevel ?? "FINEST";
+        const devName = `MCP_${Date.now().toString().slice(-8)}`;
+        const debugLevelResp = await fetchWithTimeout(`${toolingBase}/sobjects/DebugLevel`, {
+            method: "POST", headers, body: JSON.stringify({
+                DeveloperName: devName, MasterLabel: devName,
+                ApexCode: level, ApexProfiling: "INFO", Callout: "INFO", Database: "INFO",
+                System: "INFO", Validation: "INFO", Visualforce: "INFO", Workflow: "INFO",
+            }),
+        }, 30_000);
+        if (!debugLevelResp.ok) { const t = await debugLevelResp.text().catch(() => ""); return { success: false, message: sanitizeError(`Failed to create DebugLevel: ${t.slice(0, 300)}`) }; }
+        const debugLevelData = await debugLevelResp.json();
+        const debugLevelId = debugLevelData.id;
+
+        const durationMs = (params.durationMinutes ?? 30) * 60 * 1000;
+        const startDate = new Date().toISOString();
+        const expirationDate = new Date(Date.now() + durationMs).toISOString();
+        const traceFlagResp = await fetchWithTimeout(`${toolingBase}/sobjects/TraceFlag`, {
+            method: "POST", headers, body: JSON.stringify({
+                TracedEntityId: userId, DebugLevelId: debugLevelId, LogType: "USER_DEBUG",
+                StartDate: startDate, ExpirationDate: expirationDate,
+            }),
+        }, 30_000);
+        if (!traceFlagResp.ok) { const t = await traceFlagResp.text().catch(() => ""); return { success: false, message: sanitizeError(`Failed to create TraceFlag: ${t.slice(0, 300)}`) }; }
+        const traceFlagData = await traceFlagResp.json();
+
+        return { success: true, traceFlagId: traceFlagData.id, debugLevelId, userId, expirationDate, message: `Debug logging enabled for '${params.username}' at ${level} until ${expirationDate}. Trigger some activity, then use sf_get_debug_logs to list logs and sf_get_debug_log_body to read one.` };
+    } catch (err) {
+        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+    }
+}
 export async function getApexLogs(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const client = createClient(auth);
@@ -5818,6 +5922,24 @@ export async function createFieldLevelSecurity(auth: SalesforceAuth, params: Rec
         }
         const allOk = results.every(r => r.success);
         return { success: allOk, results, message: `FLS updated for ${results.filter(r => r.success).length}/${results.length} profiles.` };
+    } catch (err) {
+        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+    }
+}
+
+export async function getFieldPermissions(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
+    try {
+        const client = createClient(auth);
+        const fieldFull = `${params.objectName}.${params.fieldName}`.replace(/'/g, "\\'");
+        const soql = `SELECT Parent.ProfileId, Parent.Profile.Name, Parent.IsOwnedByProfile, Parent.Label, PermissionsRead, PermissionsEdit FROM FieldPermissions WHERE SobjectType = '${params.objectName.replace(/'/g, "\\'")}' AND Field = '${fieldFull}'`;
+        const resp = await client.get<{ records: Array<Record<string, any>> }>(`/query?q=${encodeURIComponent(soql)}`);
+        const grants = (resp.data.records ?? []).map((r) => ({
+            grantedVia: r.Parent?.IsOwnedByProfile ? "Profile" : "Permission Set",
+            name: r.Parent?.Profile?.Name ?? r.Parent?.Label,
+            readable: r.PermissionsRead,
+            editable: r.PermissionsEdit,
+        }));
+        return { success: true, objectName: params.objectName, fieldName: params.fieldName, grants, message: `${grants.length} FLS grant(s) found for ${fieldFull}.` };
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
     }

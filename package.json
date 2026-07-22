@@ -1,7 +1,7 @@
 {
   "name": "salesforce-metadata-mcp",
-  "version": "2.6.7",
-  "description": "The most comprehensive Salesforce MCP server: 212 tools covering objects, flows, Apex, LWC, layouts, permissions, profiles, reports, dashboards, Experience Cloud, OmniStudio, Agentforce, Einstein AI, audit trail, and more.",
+  "version": "2.7.0",
+  "description": "The only Salesforce MCP with Agentforce, OmniStudio & DevOps Center tools — 219 tools total: objects, flows, Apex (create + read), schema describe, debug logs, permissions, reports, Experience Cloud, Einstein AI.",
   "mcpName": "io.github.semwalajay83-sem/salesforce-metadata-mcp",
   "license": "MIT",
   "private": false,

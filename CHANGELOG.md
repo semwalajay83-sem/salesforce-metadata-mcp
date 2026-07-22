@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.7.0] - 2026-07-23
+
+### Added — 7 new tools closing the "daily developer loop" gap
+
+Competitive analysis showed the most-downloaded community Salesforce MCP servers cover a query→describe→read/write→debug loop that this package was missing, despite its breadth elsewhere. Added:
+
+- `sf_describe_object` — REST Describe API schema introspection (fields, picklist values, child relationships, record types)
+- `sf_get_apex_class` / `sf_get_apex_trigger` — read existing Apex source via Tooling API (wired up two previously-unused, already-implemented service functions, plus a new trigger-read function)
+- `sf_enable_debug_logs` / `sf_get_debug_logs` / `sf_get_debug_log_body` — full debug-log chain (TraceFlag creation, log listing, log body retrieval)
+- `sf_get_field_permissions` — audit current FLS grants across Profiles/Permission Sets (complements the existing write-only `sf_create_field_level_security`)
+- `sf_query_records` description now documents GROUP BY/aggregate query support, which the underlying schema already allowed but wasn't discoverable
+
+Tool count: 212 → 219. All new tools verified against a live dev org (test-new-tools.mjs); existing tool behavior unaffected (additive changes only, one description-only edit).
+
+Repositioned npm/README description to lead with the real differentiator (Agentforce, OmniStudio, DevOps Center tool coverage — nothing else in the ecosystem has these) rather than raw tool count.
+
 ## [2.6.7] - 2026-07-06
 
 ### Docs-only release (no functional changes)

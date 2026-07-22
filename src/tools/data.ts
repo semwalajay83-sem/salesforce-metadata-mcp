@@ -5,14 +5,14 @@ import {
   DeleteRecordSchema, SendEmailSchema, ExportRecordsSchema, UpsertRecordSchema,
   GetRecordSchema, SearchRecordsSchema,
   CreateDataCategorySchema, BulkInsertRecordsSchema, BulkUpdateRecordsSchema,
-  BulkDeleteRecordsSchema, CreateExtIdFieldSchema,
+  BulkDeleteRecordsSchema, CreateExtIdFieldSchema, DescribeObjectSchema,
 } from "../schemas/index.js";
 import {
   getAuth, createUser, updateUser, assignQueueMember, createPublicGroup,
   queryRecords, createRecord, updateRecord, bulkImportRecords, deleteRecord,
   sendEmail, exportRecords, upsertRecord, getRecord, searchRecords,
   createDataCategory, bulkInsertRecords, bulkUpdateRecords, bulkDeleteRecords,
-  createExtIdField,
+  createExtIdField, describeObject,
 } from "../services/salesforce.js";
 import { resultContent } from "./utils.js";
 
@@ -63,12 +63,30 @@ export function registerDataTools(server: McpServer): void {
 
   server.registerTool("sf_query_records", {
     title: "Query Records (SOQL)",
-    description: `Executes a SOQL query against the org and returns matching records. Provide either a full SOQL string (soql param) or individual parameters (objectApiName, fields, whereClause, orderBy, limit). Use for reading data, checking existing records before creating, or verifying changes.`,
+    description: `Executes a SOQL query against the org and returns matching records. Provide the full SOQL string in the query param. Use for reading data, checking existing records before creating, or verifying changes.
+
+Supports aggregate queries — GROUP BY with COUNT(), SUM(), AVG(), MAX(), MIN(), e.g.:
+'SELECT StageName, COUNT(Id), SUM(Amount) FROM Opportunity GROUP BY StageName'
+Aggregate results come back as regular records with the aggregate expressions as field keys (e.g. "expr0").`,
     inputSchema: QueryRecordsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (params) => {
     const auth = await getAuth();
     const result = await queryRecords(auth, params);
+    return resultContent(result);
+  });
+
+  server.registerTool("sf_describe_object", {
+    title: "Describe Object Schema",
+    description: `Retrieves schema metadata for a Salesforce object via the REST Describe API: fields (name, label, type, required, picklist values, length, references), child relationships, and record type info. Call this before querying or creating records on an unfamiliar object, or when a user asks what fields exist on an object.
+
+objectApiName: SObject API name, e.g. 'Account', 'My_Object__c'
+fieldsOnly: set true for a smaller/faster response with just the field list, omitting child relationships and record types`,
+    inputSchema: DescribeObjectSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async (params) => {
+    const auth = await getAuth();
+    const result = await describeObject(auth, params);
     return resultContent(result);
   });
 

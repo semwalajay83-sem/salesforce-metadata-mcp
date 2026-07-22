@@ -1,6 +1,6 @@
 # Tools Reference
 
-Complete documentation for all 212 tools in `salesforce-metadata-mcp`.
+Complete documentation for all 219 tools in `salesforce-metadata-mcp`. (Highlights below cover the most commonly used tools in depth; see the README's full 219-tool table for every tool name.)
 
 ---
 
@@ -58,6 +58,21 @@ Creates a new field on an existing object.
 
 ---
 
+### sf_describe_object
+Reads an object's full schema via the REST Describe API — fields, types, picklist values, child relationships, and record types. Call this before querying or creating records on an unfamiliar object.
+
+**Parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `objectApiName` | string | required | SObject API name, e.g. `Account` |
+| `fieldsOnly` | boolean | `false` | Return only the field list, omitting child relationships/record types, for a smaller/faster response |
+
+**Example prompts:**
+- "What fields are on the Opportunity object?"
+- "Describe the Case object schema before I query it"
+
+---
+
 ### sf_create_custom_metadata_type
 Creates a Custom Metadata Type (__mdt) for storing configuration.
 
@@ -92,6 +107,53 @@ Deploys an Apex class to the org via Metadata API zip deploy.
 - "Create a Schedulable class called NightlyReport that generates a report email"
 
 **Expected output:** Deploy job ID and success/failure message with any compile errors.
+
+---
+
+### sf_get_apex_class
+Reads the full source of an existing Apex class by exact name, via the Tooling API. Use before modifying a class, when debugging, or when asked to explain existing code.
+
+**Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `className` | string | Apex class name (exact match) |
+
+**Example prompts:**
+- "Show me the AccountService class"
+- "What does the DataCleanupBatch class do?"
+
+---
+
+### sf_get_apex_trigger
+Reads the full source of an existing Apex trigger by exact name, including which object it fires on and which events (before/after insert/update/delete/undelete) it's registered for.
+
+**Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `triggerName` | string | Apex trigger name (exact match) |
+
+**Example prompts:**
+- "Show me the AccountTrigger source"
+
+---
+
+### sf_enable_debug_logs / sf_get_debug_logs / sf_get_debug_log_body
+A three-step chain for reading Apex debug logs. Salesforce only records activity for users with an active trace flag, so enable logging first, trigger the activity you want to inspect, then list and read the resulting logs.
+
+**sf_enable_debug_logs parameters:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `username` | string | required | Username of the user to trace |
+| `durationMinutes` | number | `30` | How long tracing stays active (max 1440) |
+| `debugLevel` | enum | `FINEST` | Apex code log granularity |
+
+**sf_get_debug_logs parameters:** `username` (optional filter), `operation` (optional substring filter), `limit` (default 10).
+
+**sf_get_debug_log_body parameters:** `logId` — from `sf_get_debug_logs`. Logs are retained by Salesforce for 24 hours only.
+
+**Example prompts:**
+- "Turn on debug logging for ajay@example.com, then run this flow and show me the log"
+- "List the last 5 debug logs and show me the most recent one"
 
 ---
 
@@ -246,4 +308,19 @@ Generates a complete MCP server project on disk.
 
 ---
 
-*For the complete list of all 212 tools, see [README.md](README.md).*
+### sf_get_field_permissions
+Reads the current field-level security grants for a field across all Profiles and Permission Sets that reference it. Complements `sf_create_field_level_security`, which sets grants but doesn't report the current state — use this to audit access before making changes.
+
+**Parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `objectName` | string | Object API name, e.g. `Account` |
+| `fieldName` | string | Field API name, e.g. `Revenue__c` |
+
+**Example prompts:**
+- "Which profiles can edit the Revenue__c field on Opportunity?"
+- "Audit field-level security for Account.AnnualRevenue before I change it"
+
+---
+
+*For the complete list of all 219 tools, see [README.md](README.md).*
