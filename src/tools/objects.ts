@@ -118,7 +118,7 @@ export function registerObjectTools(server: McpServer): void {
     "sf_create_global_value_set",
     {
       title: "Create Global Value Set (Shared Picklist)",
-      description: `Creates a Global Value Set — a shared picklist definition that can be referenced by multiple Picklist fields across different objects. Any change to the Global Value Set is reflected in all fields that use it. Use when the same set of values (like Status, Priority, Region) should be shared and kept in sync across multiple objects.`,
+      description: `Creates a Global Value Set — a shared picklist definition that can be referenced by multiple Picklist fields across different objects. Any change to the Global Value Set is reflected in all fields that use it. Use when the same set of values (like Status, Priority, Region) should be shared and kept in sync across multiple objects. fullName must end with __gvs, e.g. 'Industry_Types__gvs'.`,
       inputSchema: CreateGlobalValueSetSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },

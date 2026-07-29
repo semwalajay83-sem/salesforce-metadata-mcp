@@ -127,14 +127,14 @@ export function registerAutomationTools(server: McpServer): void {
         const actionsXml = e.escalationActions.map((a: { minutesToEscalation: number; assignedTo?: string; assignedToType?: string; notifyTo?: string; template?: string }) => `
           <met:escalationAction>
             <met:minutesToEscalation>${a.minutesToEscalation}</met:minutesToEscalation>
-            ${a.assignedTo ? `<met:assignedTo>${a.assignedTo}</met:assignedTo><met:assignedToType>${a.assignedToType ?? "Queue"}</met:assignedToType>` : ""}
-            ${a.notifyTo ? `<met:notifyTo>${a.notifyTo}</met:notifyTo>` : ""}
-            ${a.template ? `<met:template>${a.template}</met:template>` : ""}
+            ${a.assignedTo ? `<met:assignedTo>${x(a.assignedTo)}</met:assignedTo><met:assignedToType>${x(a.assignedToType ?? "Queue")}</met:assignedToType>` : ""}
+            ${a.notifyTo ? `<met:notifyTo>${x(a.notifyTo)}</met:notifyTo>` : ""}
+            ${a.template ? `<met:template>${x(a.template)}</met:template>` : ""}
           </met:escalationAction>`).join("\n");
         return `<met:ruleEntry>
           ${criteriaXml}
-          ${e.formula ? `<met:formula>${e.formula}</met:formula>` : ""}
-          <met:businessHours>${e.businessHours}</met:businessHours>
+          ${e.formula ? `<met:formula>${x(e.formula)}</met:formula>` : ""}
+          <met:businessHours>${x(e.businessHours)}</met:businessHours>
           <met:escalationStartDate>${e.escalationStartDate}</met:escalationStartDate>
           ${actionsXml}
         </met:ruleEntry>`;
@@ -142,7 +142,7 @@ export function registerAutomationTools(server: McpServer): void {
       const xml = `<met:metadata xsi:type="met:EscalationRules" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
         <met:fullName>Case</met:fullName>
         <met:escalationRule>
-          <met:fullName>${params.ruleName}</met:fullName>
+          <met:fullName>${x(params.ruleName)}</met:fullName>
           <met:active>${params.active}</met:active>
           ${entriesXml}
         </met:escalationRule>

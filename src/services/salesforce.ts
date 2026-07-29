@@ -126,6 +126,16 @@ function getFreshTokenFromCLI(alias: string): string {
       env: { PATH: process.env["PATH"] ?? "" },
     });
   } catch (err) {
+    // A non-zero exit doesn't always mean the token wasn't obtained — the CLI can print an
+    // update-nag banner or other noise that makes execSync treat the call as failed even though
+    // valid --json output is still sitting on stdout. Try that before giving up.
+    const stdout = (err as { stdout?: string }).stdout;
+    if (stdout) {
+      try {
+        const parsed = JSON.parse(stdout) as { result?: { accessToken?: string } };
+        if (parsed?.result?.accessToken) return parsed.result.accessToken;
+      } catch { /* stdout wasn't valid JSON either — fall through to the real error below */ }
+    }
     const msg = err instanceof Error ? sanitizeError(err.message) : "SF CLI execution failed.";
     throw new Error(`SF CLI error: ${msg}`);
   }
@@ -1912,9 +1922,10 @@ function buildBusinessProcessXml(params: {
       <met:default>${i === 0 ? "true" : "false"}</met:default>
       <met:closed>false</met:closed>
     </met:values>`).join("\n");
+  // Note: BusinessProcess has no <label> field in the Metadata API schema (Salesforce rejects it
+  // with "label invalid at this location") — params.label is only used as the description fallback.
   return `<met:metadata xsi:type="met:BusinessProcess" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.objectName)}.${x(params.processName)}</met:fullName>
-    <met:label>${x(params.label)}</met:label>
     <met:isActive>${params.isActive ? "true" : "false"}</met:isActive>
     <met:description>${x(params.description ?? params.label)}</met:description>
     ${valuesXml}
@@ -1956,24 +1967,6 @@ function buildPageLayoutXml(params: {
     <met:fullName>${x(params.objectName)}-${x(params.layoutName)}</met:fullName>
     ${sectionsXml}
     ${relatedListsXml}
-  </met:metadata>`;
-}
-
-function buildFieldDependencyXml(params: {
-  objectName: string; controllingField: string; dependentField: string;
-  valueSettings: Array<{ controllingFieldValue: string[]; valueName: string }>;
-}): string {
-  const settingsXml = params.valueSettings.map(vs => `
-    <met:valueSettings>
-      ${vs.controllingFieldValue.map(cfv => `<met:controllingFieldValue>${x(cfv)}</met:controllingFieldValue>`).join("\n")}
-      <met:valueName>${x(vs.valueName)}</met:valueName>
-    </met:valueSettings>`).join("\n");
-  return `<met:metadata xsi:type="met:CustomField" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <met:fullName>${x(params.objectName)}.${x(params.dependentField)}</met:fullName>
-    <met:fieldDependency>
-      <met:controllingField>${x(params.controllingField)}</met:controllingField>
-      ${settingsXml}
-    </met:fieldDependency>
   </met:metadata>`;
 }
 
@@ -2329,8 +2322,44 @@ export async function createBusinessProcess(auth: SalesforceAuth, params: Parame
 export async function createPageLayout(auth: SalesforceAuth, params: Parameters<typeof buildPageLayoutXml>[0]): Promise<ToolResult> {
   return upsertMetadata(auth, buildPageLayoutXml(params));
 }
-export async function createFieldDependency(auth: SalesforceAuth, params: Parameters<typeof buildFieldDependencyXml>[0]): Promise<ToolResult> {
-  return upsertMetadata(auth, buildFieldDependencyXml(params));
+export async function createFieldDependency(auth: SalesforceAuth, params: {
+  objectName: string; controllingField: string; dependentField: string;
+  valueSettings: Array<{ controllingFieldValue: string[]; valueName: string }>;
+}): Promise<ToolResult> {
+  // Uses the Tooling API PATCH pattern (same as addPicklistValues) rather than a from-scratch SOAP
+  // metadata XML: a bare CustomField update carrying only <valueSet><controllingField>... fails
+  // with "Could not resolve standard field's name" — Salesforce needs the field's full existing
+  // metadata (label, type, current values) present in the update, not just the new dependency info.
+  // Reading + merging + patching the live Metadata avoids having to reconstruct all of that by hand.
+  try {
+    const client = createClient(auth);
+    const fieldDevName = params.dependentField.replace(/__c$/i, "");
+    const isCustomLike = params.objectName.endsWith("__c") || params.objectName.endsWith("__mdt") || params.objectName.endsWith("__e");
+    const query = isCustomLike
+      ? `SELECT Id, Metadata FROM CustomField WHERE DeveloperName='${fieldDevName}' AND EntityDefinition.QualifiedApiName='${params.objectName}'`
+      : `SELECT Id, Metadata FROM CustomField WHERE DeveloperName='${fieldDevName}' AND TableEnumOrId='${params.objectName}'`;
+    const resp = await client.get<{ records: Array<{ Id: string; Metadata: Record<string, unknown> }> }>(`/tooling/query?q=${encodeURIComponent(query)}`);
+    if (!resp.data.records.length) return { success: false, message: `Field '${params.objectName}.${params.dependentField}' not found in Tooling API.` };
+    const record = resp.data.records[0];
+    const stripNulls = (o: unknown): unknown => {
+      if (Array.isArray(o)) return o.map(stripNulls);
+      if (o !== null && typeof o === "object") {
+        return Object.fromEntries(Object.entries(o as Record<string, unknown>).filter(([, v]) => v !== null).map(([k, v]) => [k, stripNulls(v)]));
+      }
+      return o;
+    };
+    const cleanExisting = stripNulls(record.Metadata ?? {}) as Record<string, unknown>;
+    const updatedValueSet = {
+      ...(cleanExisting.valueSet as Record<string, unknown> ?? {}),
+      controllingField: params.controllingField,
+      valueSettings: params.valueSettings.map(vs => ({ controllingFieldValue: vs.controllingFieldValue, valueName: vs.valueName })),
+    };
+    const updatedMeta = { ...cleanExisting, valueSet: updatedValueSet };
+    await client.patch<unknown>(`/tooling/sobjects/CustomField/${record.Id}`, { Metadata: updatedMeta });
+    return { success: true, fullName: `${params.objectName}.${params.dependentField}`, created: false, message: `Field dependency set: '${params.dependentField}' now depends on '${params.controllingField}'.` };
+  } catch (err) {
+    return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+  }
 }
 export async function createExperienceSite(auth: SalesforceAuth, params: Parameters<typeof buildNetworkXml>[0]): Promise<ToolResult> {
   return upsertMetadata(auth, buildNetworkXml(params));

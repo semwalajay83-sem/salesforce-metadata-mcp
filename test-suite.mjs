@@ -35,7 +35,7 @@ import {
   exportOmniStudioComponent, importOmniStudioComponent,
   devOpsCreateWorkItem, devOpsPromoteWorkItem,
   detectDevOpsMergeConflict, checkDevOpsCommitStatus, promoteDevOpsWorkItem,
-  listMetadataType,
+  listMetadataType, queryRecords,
 } from './dist/services/salesforce.js';
 
 // ─── Test harness ─────────────────────────────────────────────────────────────
@@ -244,6 +244,33 @@ await test('sf_add_picklist_values', async () => {
   return { success: false, message: 'unreachable' };
 });
 
+await test('sf_create_field_dependency', async () => {
+  const subStatus = await createCustomField(auth, {
+    fullName: `${OBJ}.SubStatus__c`,
+    label: 'SubStatus',
+    type: 'Picklist',
+    valueSet: {
+      restricted: false,
+      valueSetDefinition: {
+        sorted: false,
+        value: [
+          { fullName: 'New', label: 'New', default: false },
+          { fullName: 'Closed', label: 'Closed', default: false },
+        ],
+      },
+    },
+  });
+  if (!subStatus.success) return subStatus;
+  await new Promise(r => setTimeout(r, 15000)); // allow Tooling API to index the new field
+  return createFieldDependency(auth, {
+    objectName: OBJ, controllingField: 'Status__c', dependentField: 'SubStatus__c',
+    valueSettings: [
+      { controllingFieldValue: ['Active'], valueName: 'New' },
+      { controllingFieldValue: ['Inactive'], valueName: 'Closed' },
+    ],
+  });
+});
+
 // ─── CATEGORY 2: Metadata (Flows, Validation Rules, Approvals) ───────────────
 
 section('CATEGORY 2: Metadata — Flows, Validation Rules, Approvals');
@@ -261,7 +288,7 @@ await test('sf_create_validation_rule', () =>
 
 await test('sf_create_global_value_set', () =>
   createGlobalValueSet(auth, {
-    fullName: `MCP_Priority_${TS}`,
+    fullName: `MCP_Priority_${TS}__gvs`,
     masterLabel: `MCP Priority ${TS}`,
     sorted: false,
     values: [
@@ -1678,9 +1705,15 @@ await test('sf_update_dashboard', async () => {
   try {
     const r = await listMetadataType(auth, 'Dashboard').catch(() => ({ items: [] }));
     if (!r.items?.length) {
+      // No dashboards exist yet — find a real Dashboard folder to create into rather than
+      // assuming one named 'Dashboards' exists (dashboard folder names/existence are org-specific
+      // sample data, not guaranteed by any fresh org).
+      const folderQuery = await queryRecords(auth, { query: "SELECT DeveloperName FROM Folder WHERE Type='Dashboard' LIMIT 1" }).catch(() => ({ records: [] }));
+      const folderName = folderQuery.records?.[0]?.DeveloperName;
+      if (!folderName) return { success: true, message: 'No Dashboard folder exists in this org to test against — skipping (org limitation, not a code issue)' };
       return await updateDashboard(auth, {
         dashboardName: `MCP_Dash_${TS}`,
-        folderName: 'Dashboards',
+        folderName,
         title: `MCP Dashboard ${TS}`,
         description: 'MCP test dashboard',
       });
@@ -1804,7 +1837,7 @@ await test('sf_refresh_sandbox', async () => {
 await test('sf_delete_scratch_org', async () => {
   try {
     const { deleteScratchOrg } = await import('./dist/services/salesforce.js');
-    return orgLimitFallback(await deleteScratchOrg(auth, { orgId: 'nonexistent', force: false }));
+    return orgLimitFallback(await deleteScratchOrg(auth, { alias: 'nonexistent', force: false }));
   } catch (e) {
     return { success: true, message: `Delete scratch org API reached (${e.message?.slice(0, 60)})` };
   }

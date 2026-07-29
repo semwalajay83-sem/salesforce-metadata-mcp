@@ -19,6 +19,7 @@ import {
   createEmailTemplate,
   createCustomNotificationType,
   createReportType,
+  x,
 } from "../services/salesforce.js";
 import {
   buildStaticResourceZip,
@@ -237,18 +238,18 @@ export function registerUiTools(server: McpServer): void {
       const componentsXml = (params.components ?? []).map((c) => `
         <met:components>
           <met:type>${c.type}</met:type>
-          ${c.reportApiName ? `<met:report>${c.reportApiName}</met:report>` : ""}
-          ${c.header ? `<met:header>${c.header}</met:header>` : ""}
-          ${c.footer ? `<met:footer>${c.footer}</met:footer>` : ""}
+          ${c.reportApiName ? `<met:report>${x(c.reportApiName)}</met:report>` : ""}
+          ${c.header ? `<met:header>${x(c.header)}</met:header>` : ""}
+          ${c.footer ? `<met:footer>${x(c.footer)}</met:footer>` : ""}
           ${c.chartType ? `<met:chartAxisRange>Auto</met:chartAxisRange>` : ""}
           <met:columnSpan>${c.columnSpan}</met:columnSpan>
           <met:rowSpan>${c.rowSpan}</met:rowSpan>
         </met:components>`).join("\n");
       const xml = `<met:metadata xsi:type="met:Dashboard" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-        <met:fullName>${params.fullName}</met:fullName>
-        <met:title>${params.title}</met:title>
-        ${params.description ? `<met:description>${params.description}</met:description>` : ""}
-        ${params.runningUser ? `<met:runningUser>${params.runningUser}</met:runningUser>` : ""}
+        <met:fullName>${x(params.fullName)}</met:fullName>
+        <met:title>${x(params.title)}</met:title>
+        ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+        ${params.runningUser ? `<met:runningUser>${x(params.runningUser)}</met:runningUser>` : ""}
         <met:backgroundEndColor>#FFFFFF</met:backgroundEndColor>
         <met:backgroundFadeDirection>Diagonal</met:backgroundFadeDirection>
         <met:backgroundStartColor>#FFFFFF</met:backgroundStartColor>

@@ -77,7 +77,7 @@ ${outputLines}
   const { execSync } = await import('child_process');
   try {
     const output = execSync(
-      `sf apex run --target-org secondorg -f ${tmpFile}`,
+      `sf apex run --target-org ${process.env.SF_ALIAS || 'secondorg'} -f ${tmpFile}`,
       { encoding: 'utf8', timeout: 60000 }
     );
     // Parse debug output — match only actual USER_DEBUG lines (|DEBUG|OUT_var=value)

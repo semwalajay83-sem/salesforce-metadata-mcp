@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.8.2] - 2026-07-30
+
+### Fixed — 5 more real bugs found by full regression testing across all 221 tools
+
+Ajay asked for thorough regression testing against every tool with edge cases, not just the tools touched in v2.8.0/2.8.1. Ran the repo's full `test-suite.mjs` (215 tests, all 221 tools either directly exercised or reviewed) against `demo-org`, plus the dedicated Flow QA suite (33 scenarios). Found and fixed:
+
+- **`sf_create_global_value_set`** — schema didn't enforce or document the required `__gvs` fullName suffix; Salesforce rejects GlobalValueSet without it. Added regex validation matching the existing `__c`/`__mdt` pattern used by other metadata types, plus a description note.
+- **`sf_create_business_process`** — XML included a `<label>` element that doesn't exist in the `BusinessProcess` Metadata API type at all (Salesforce: "label invalid at this location"). Removed it; `label` still feeds the `description` fallback.
+- **`sf_create_dashboard`** — built XML inline without escaping (`ui.ts`), unlike every other metadata builder in the codebase. A `&` in the title broke the deploy outright. Applied the `x()` escaping helper to `fullName`, `title`, `description`, `runningUser`, and component `reportApiName`/`header`/`footer`.
+- **`sf_create_escalation_rule`** — same missing-escaping issue (`automation.ts`) on `formula`, `assignedTo`, `notifyTo`, `template`, `ruleName`. `formula` is especially exposed since Salesforce formulas commonly contain `<`, `>`, `&&`.
+- **`sf_create_field_dependency`** — two-layer bug. (1) Wrapped `controllingField`/`valueSettings` in a `<fieldDependency>` element that doesn't exist on `CustomField` (Salesforce: "fieldDependency invalid at this location") — they belong directly inside `<valueSet>`. (2) Even after that fix, a from-scratch SOAP update carrying only the new dependency info failed with "Could not resolve standard field's name" — Salesforce needs the field's full existing metadata (label, type, current values) present in the same update. Rewrote using the same Tooling-API read-merge-PATCH pattern already proven by `addPicklistValues`, instead of hand-building SOAP XML.
+
+Also fixed **`getFreshTokenFromCLI`** (JWT/CLI auth path): didn't check `err.stdout` on a non-zero exit, so a transient CLI hiccup (e.g. an update-nag banner polluting stdout) discarded an otherwise-valid access token. Same root cause as the `execSfCli` fix in 2.8.1, applied to the one auth code path that predates it.
+
+**Test coverage added:** `test-suite.mjs` gained a `sf_create_field_dependency` test (previously imported but never exercised) and its `sf_create_global_value_set`/`sf_delete_scratch_org` test data bugs were fixed (wrong fullName suffix, wrong parameter name — test bugs, not product bugs). `sf_update_dashboard`'s test no longer assumes a folder literally named "Dashboards" exists (org-specific sample-data assumption); it now discovers a real Dashboard folder first.
+
+**Final confirmation run: 212 passed, 2 expected negative-test outcomes (deleting a nonexistent scratch org / installing a fake package ID — both now correctly surface the real Salesforce rejection reason instead of a generic error, proof the 2.8.1 error-handling fix works), 1 skipped (OmniStudio, not enabled in this org), 215 total.**
+
+**Flow QA suite (33 scenarios, `qa-flow-test.mjs`) — investigated, not fixed this round:** 18 passed, 15 failed. Triage: several failures stem from the test assuming an Account named "Apex Technologies" exists (leftover from whatever org this suite was originally built against — confirmed absent in `demo-org`, which only has standard sample accounts like "Edge Communications") rather than a code defect. Others overlap with the "Known Bugs Pending Fix" already tracked in CLAUDE.md (Loop elements, cross-variable filter types, Decision element XML, GetRecords field/sort/limit gaps) — though the *symptoms* differ from what's documented (e.g. Loop now deploys and runs instead of throwing HTTP 500, but returns empty/wrong results), suggesting partial drift since those notes were written. A couple (T01, T11, T13) don't fit either pattern and may be genuinely new. This is a large, separate body of work — Flow metadata XML is one of the most complex Salesforce types — and wasn't pursued further this session pending Ajay's direction on scope. Full triage notes in session record.
+
+Also fixed `qa-flow-test.mjs`'s own test harness bug: hardcoded `--target-org secondorg` in its Apex-verification helper, now reads `SF_ALIAS` with a fallback.
+
 ## [2.8.1] - 2026-07-29
 
 ### Fixed — 5 real bugs found by thorough live-org testing of v2.8.0, same day

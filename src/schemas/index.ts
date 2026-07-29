@@ -427,8 +427,8 @@ export const CreateCustomSettingSchema = z.object({
 }).strict();
 
 export const CreateGlobalValueSetSchema = z.object({
-  fullName: z.string().min(1).regex(/^[A-Za-z][A-Za-z0-9_]*$/)
-    .describe("API name of the global value set, e.g. 'Industry_Types'"),
+  fullName: z.string().min(1).regex(/^[A-Za-z][A-Za-z0-9_]*__gvs$/, "Must end with __gvs, e.g. 'Industry_Types__gvs'")
+    .describe("API name of the global value set, e.g. 'Industry_Types__gvs'"),
   masterLabel: z.string().min(1).describe("Label for the global value set"),
   description: z.string().optional().describe("Description"),
   sorted: z.boolean().default(false).describe("Auto-sort values alphabetically"),
