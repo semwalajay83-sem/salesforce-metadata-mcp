@@ -6140,81 +6140,80 @@ export async function createNotificationType(auth: SalesforceAuth, params: Recor
 
 // ─── CATEGORY 6 & 9: DevOps ───────────────────────────────────────────────────
 
-export async function createNewScratchOrg(_auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
+/**
+ * Runs an `sf` CLI command with --json and returns its parsed result. On failure, the CLI's
+ * actual error detail is in the exception's `stdout` (still valid JSON, since --json forces JSON
+ * output even on error) — `err.message` only contains a generic "Command failed: ..." wrapper, so
+ * that stdout must be parsed first or the real Salesforce error reason is lost.
+ */
+function execSfCli(args: string[], timeoutMs: number): { success: true; result: Record<string, unknown> } | { success: false; message: string } {
     try {
-        const args: string[] = ["org", "create", "scratch", "--json"];
-        if (params.definitionFile) args.push("--definition-file", params.definitionFile);
-        if (params.alias) args.push("--alias", params.alias);
-        if (params.duration) args.push("--duration-days", String(params.duration));
-        if (params.devHubAlias) args.push("--target-dev-hub", params.devHubAlias);
-        const raw = execSync(`sf ${args.join(" ")}`, { encoding: "utf-8", timeout: 120_000, env: { PATH: process.env["PATH"] ?? "" } });
-        return { success: true, ...(JSON.parse(raw) as { result?: Record<string, unknown> }).result };
+        const raw = execSync(`sf ${args.join(" ")}`, { encoding: "utf-8", timeout: timeoutMs, env: { PATH: process.env["PATH"] ?? "" } });
+        const parsed = JSON.parse(raw) as { result?: Record<string, unknown> };
+        return { success: true, result: parsed.result ?? {} };
     } catch (err) {
+        const stdout = (err as { stdout?: string }).stdout;
+        if (stdout) {
+            try {
+                const parsed = JSON.parse(stdout) as { message?: string };
+                if (parsed.message) return { success: false, message: sanitizeError(parsed.message) };
+            } catch { /* stdout wasn't valid JSON — fall through to the generic message below */ }
+        }
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
     }
+}
+
+export async function createNewScratchOrg(_auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
+    const args: string[] = ["org", "create", "scratch", "--json"];
+    if (params.definitionFile) args.push("--definition-file", params.definitionFile);
+    if (params.alias) args.push("--alias", params.alias);
+    if (params.duration) args.push("--duration-days", String(params.duration));
+    if (params.devHubAlias) args.push("--target-dev-hub", params.devHubAlias);
+    const outcome = execSfCli(args, 120_000);
+    return outcome.success ? { success: true, ...outcome.result } : outcome;
 }
 
 export async function deleteScratchOrg(_auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
-    try {
-        const args: string[] = ["org", "delete", "scratch", "--target-org", params.alias, "--json"];
-        if (params.noPrompt !== false) args.push("--no-prompt");
-        const raw = execSync(`sf ${args.join(" ")}`, { encoding: "utf-8", timeout: 60_000, env: { PATH: process.env["PATH"] ?? "" } });
-        return { success: true, ...(JSON.parse(raw) as { result?: Record<string, unknown> }).result };
-    } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
-    }
+    const args: string[] = ["org", "delete", "scratch", "--target-org", params.alias, "--json"];
+    if (params.noPrompt !== false) args.push("--no-prompt");
+    const outcome = execSfCli(args, 60_000);
+    return outcome.success ? { success: true, ...outcome.result } : outcome;
 }
 
 export async function createPackage(_auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
-    try {
-        const args: string[] = ["package", "create", "--name", params.name, "--package-type", params.packageType, "--path", params.path, "--json"];
-        if (params.description) args.push("--description", params.description);
-        if (params.noNamespace) args.push("--no-namespace");
-        const raw = execSync(`sf ${args.join(" ")}`, { encoding: "utf-8", timeout: 60_000, env: { PATH: process.env["PATH"] ?? "" } });
-        return { success: true, ...(JSON.parse(raw) as { result?: Record<string, unknown> }).result };
-    } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
-    }
+    const args: string[] = ["package", "create", "--name", params.name, "--package-type", params.packageType, "--path", params.path, "--json"];
+    if (params.description) args.push("--description", params.description);
+    if (params.noNamespace) args.push("--no-namespace");
+    const outcome = execSfCli(args, 60_000);
+    return outcome.success ? { success: true, ...outcome.result } : outcome;
 }
 
 export async function createPackageVersion(_auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
-    try {
-        const args: string[] = ["package", "version", "create", "--package", params.packageId, "--json"];
-        if (params.installationKey) args.push("--installation-key", params.installationKey);
-        if (params.codeVersion) args.push("--version-number", params.codeVersion);
-        if (params.wait) args.push("--wait", String(params.wait));
-        const raw = execSync(`sf ${args.join(" ")}`, { encoding: "utf-8", timeout: 600_000, env: { PATH: process.env["PATH"] ?? "" } });
-        return { success: true, ...(JSON.parse(raw) as { result?: Record<string, unknown> }).result };
-    } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
-    }
+    const args: string[] = ["package", "version", "create", "--package", params.packageId, "--json"];
+    if (params.installationKey) args.push("--installation-key", params.installationKey);
+    if (params.codeVersion) args.push("--version-number", params.codeVersion);
+    if (params.wait) args.push("--wait", String(params.wait));
+    const outcome = execSfCli(args, 600_000);
+    return outcome.success ? { success: true, ...outcome.result } : outcome;
 }
 
 export async function installPackage(_auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
-    try {
-        const targetOrg = params.targetOrg ?? process.env["SF_ALIAS"];
-        const args: string[] = ["package", "install", "--package", params.packageId, "--json"];
-        if (targetOrg) args.push("--target-org", targetOrg);
-        if (params.installationKey) args.push("--installation-key", params.installationKey);
-        if (params.wait) args.push("--wait", String(params.wait));
-        const raw = execSync(`sf ${args.join(" ")}`, { encoding: "utf-8", timeout: 600_000, env: { PATH: process.env["PATH"] ?? "" } });
-        return { success: true, ...(JSON.parse(raw) as { result?: Record<string, unknown> }).result };
-    } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
-    }
+    const targetOrg = params.targetOrg ?? process.env["SF_ALIAS"];
+    const args: string[] = ["package", "install", "--package", params.packageId, "--json"];
+    if (targetOrg) args.push("--target-org", targetOrg);
+    if (params.installationKey) args.push("--installation-key", params.installationKey);
+    if (params.wait) args.push("--wait", String(params.wait));
+    const outcome = execSfCli(args, 600_000);
+    return outcome.success ? { success: true, ...outcome.result } : outcome;
 }
 
 export async function uninstallPackage(_auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
-    try {
-        const targetOrg = params.targetOrg ?? process.env["SF_ALIAS"];
-        const args: string[] = ["package", "uninstall", "--package", params.packageId, "--json"];
-        if (targetOrg) args.push("--target-org", targetOrg);
-        if (params.wait) args.push("--wait", String(params.wait));
-        const raw = execSync(`sf ${args.join(" ")}`, { encoding: "utf-8", timeout: 600_000, env: { PATH: process.env["PATH"] ?? "" } });
-        return { success: true, ...(JSON.parse(raw) as { result?: Record<string, unknown> }).result };
-    } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
-    }
+    const targetOrg = params.targetOrg ?? process.env["SF_ALIAS"];
+    const args: string[] = ["package", "uninstall", "--package", params.packageId, "--json"];
+    if (targetOrg) args.push("--target-org", targetOrg);
+    if (params.wait) args.push("--wait", String(params.wait));
+    const outcome = execSfCli(args, 600_000);
+    return outcome.success ? { success: true, ...outcome.result } : outcome;
 }
 
 export async function devOpsCreateWorkItem(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
@@ -6615,7 +6614,7 @@ export async function scanApexAntipatterns(auth: SalesforceAuth, params: Record<
             query += ` AND Name IN (${names})`;
         }
         query += ` LIMIT ${maxClasses}`;
-        const resp = await client.get<{ records: Array<{ Id: string; Name: string; Body: string }> }>(`/services/data/v${API_VERSION}/tooling/query?q=${encodeURIComponent(query)}`);
+        const resp = await client.get<{ records: Array<{ Id: string; Name: string; Body: string }> }>(`/tooling/query?q=${encodeURIComponent(query)}`);
         const findings: Array<{ className: string; antipattern: string; lineHint: string }> = [];
         for (const cls of resp.data.records) {
             const body = cls.Body ?? "";
@@ -6669,7 +6668,7 @@ export async function runCodeScanner(auth: SalesforceAuth, params: Record<string
             query += ` AND Name IN (${names})`;
         }
         query += ` LIMIT ${maxClasses}`;
-        const resp = await client.get<{ records: Array<{ Id: string; Name: string; Body: string }> }>(`/services/data/v${API_VERSION}/tooling/query?q=${encodeURIComponent(query)}`);
+        const resp = await client.get<{ records: Array<{ Id: string; Name: string; Body: string }> }>(`/tooling/query?q=${encodeURIComponent(query)}`);
         const records = resp.data.records;
         if (records.length === 0) {
             return { success: true, classesScanned: 0, findingsCount: 0, findings: [], message: "No matching active Apex classes found to scan." };
@@ -6683,15 +6682,21 @@ export async function runCodeScanner(auth: SalesforceAuth, params: Record<string
         const javaAvailable = isJavaAvailable();
         let ruleSelector: string[] = params.ruleSelector?.length ? params.ruleSelector : ["Recommended"];
         let javaNote: string | undefined;
+        let configFile: string | undefined;
         if (!params.ruleSelector?.length && !javaAvailable) {
-            // pmd/cpd/sfge require Java and throw hard engine-instantiation errors when absent — restrict
-            // to the engines that run without it so results reflect real findings, not missing-Java noise.
+            // pmd/cpd/sfge require Java. Restricting rule-selector alone isn't enough — code-analyzer
+            // still tries to *instantiate* every known engine before filtering rules, so it throws hard
+            // engine-instantiation errors regardless. Explicitly disable those engines via a config file
+            // so the run is actually clean instead of surfacing missing-Java noise as fake violations.
             ruleSelector = ["eslint:Recommended", "retire-js:Recommended", "regex:Recommended", "flow:Recommended"];
             javaNote = "Java not detected on this host — PMD, CPD, and SFGE engines (including Apex SOQL-injection data-flow analysis) were skipped. Install Java 11+ to enable them for full Apex security coverage.";
+            configFile = join(tempDir, "code-analyzer.yml");
+            writeFileSync(configFile, "engines:\n  pmd:\n    disable_engine: true\n  cpd:\n    disable_engine: true\n  sfge:\n    disable_engine: true\n", "utf-8");
         }
 
         const outputFile = join(tempDir, "results.json");
         const args = ["code-analyzer", "run", "--workspace", tempDir, "--target", tempDir, "--output-file", outputFile, "--view", "table"];
+        if (configFile) args.push("--config-file", configFile);
         for (const rs of ruleSelector) args.push("--rule-selector", rs);
 
         try {
