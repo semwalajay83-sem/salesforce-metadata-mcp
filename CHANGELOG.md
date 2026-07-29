@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.8.0] - 2026-07-29
+
+### Added — 2 new tools closing gaps found in a fresh competitive scan
+
+Re-checked npm competitors (@salesforce/mcp, @tsmztech/mcp-server-salesforce, and two new entrants that surpassed this package's downloads: @alfe.ai/salesforce-mcp and @advanced-communities/salesforce-mcp-server at 41 tools). Found two genuine, well-defined gaps:
+
+- `sf_uninstall_package` — package uninstall via the SF CLI, completing the create/install/uninstall package lifecycle (`sf_install_package` existed with no counterpart)
+- `sf_run_code_scanner` — wraps Salesforce Code Analyzer (PMD, SFGE SOQL-injection data-flow analysis, RetireJS, ESLint, regex) for real multi-engine static analysis, complementing the existing lightweight `sf_scan_apex_antipatterns` heuristic. Auto-detects Java on the host; if absent, gracefully restricts to the Java-free engines (eslint, retire-js, regex, flow) and reports this in the response instead of surfacing raw engine-instantiation errors.
+
+Tool count: 219 → 221. Verified: clean `tsc` build, mock-server registration count (221, no duplicate names), `sf package uninstall --help`/`sf code-analyzer run --help` flag inspection matches what the code sends, and a local (no-org) dry run of `sf code-analyzer run` confirming the Java-detection fallback path produces valid, parseable output.
+
+**Not yet verified against a live org** — `secondorg`'s JWT auth is currently broken (Connected App OAuth scope issue, pre-existing, tracked separately) and the only CLI-authenticated org on this machine is the employer org, which this project's rules forbid using for anything. So neither tool's full org round-trip (`sf_uninstall_package`'s install→uninstall, or `sf_run_code_scanner`'s query→scan against real Apex classes) has been exercised end-to-end yet. Re-run both once `secondorg` auth is fixed, before relying on this release in production.
+
 ## [2.7.0] - 2026-07-23
 
 ### Added — 7 new tools closing the "daily developer loop" gap

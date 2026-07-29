@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io)
 
-**The only Salesforce MCP server that builds Agentforce agents, OmniStudio components, and DevOps Center pipelines** — alongside a complete daily developer loop (schema describe, Apex read, debug logs) and 219 tools total for building, configuring, and automating Salesforce orgs directly from Claude or any MCP client.
+**The only Salesforce MCP server that builds Agentforce agents, OmniStudio components, and DevOps Center pipelines** — alongside a complete daily developer loop (schema describe, Apex read, debug logs) and 221 tools total for building, configuring, and automating Salesforce orgs directly from Claude or any MCP client.
 
 ---
 
@@ -47,7 +47,7 @@ See [SETUP.md](SETUP.md) for all authentication methods and detailed setup instr
 
 ---
 
-## Tools — 219 total
+## Tools — 221 total
 
 Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with parameters and example prompts.
 
@@ -122,6 +122,8 @@ Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with param
 | `sf_enable_debug_logs` | Turn on Apex debug logging for a user (TraceFlag) |
 | `sf_get_debug_logs` | List recent Apex debug logs |
 | `sf_get_debug_log_body` | Read the full content of a debug log |
+| `sf_scan_apex_antipatterns` | Lightweight heuristic scan for SOQL/DML-in-loop, hardcoded IDs, debug statements |
+| `sf_run_code_scanner` | Multi-engine static analysis (PMD, SFGE SOQL-injection data-flow, RetireJS, ESLint) via Salesforce Code Analyzer |
 
 ### LWC Development
 | Tool | Description |
@@ -207,7 +209,7 @@ Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with param
 ## Documentation
 
 - [SETUP.md](SETUP.md) — Prerequisites, authentication, Claude configuration
-- [TOOLS.md](TOOLS.md) — All 219 tools with full parameter documentation
+- [TOOLS.md](TOOLS.md) — All 221 tools with full parameter documentation
 - [AGENTFORCE.md](AGENTFORCE.md) — Agentforce agent creation guide
 - [APEX_LWC.md](APEX_LWC.md) — Apex and LWC development guide
 - [CHANGELOG.md](CHANGELOG.md) — Version history

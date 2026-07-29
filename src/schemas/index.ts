@@ -2629,6 +2629,12 @@ export const InstallPackageSchema = z.object({
   wait: z.number().int().min(1).optional().describe("Minutes to wait for installation"),
 });
 
+export const UninstallPackageSchema = z.object({
+  packageId: z.string().min(1).describe("Package version ID (04t...) or alias to uninstall"),
+  targetOrg: z.string().optional().describe("Target org alias (defaults to SF_ALIAS env var)"),
+  wait: z.number().int().min(1).optional().describe("Minutes to wait for uninstall to complete"),
+});
+
 export const DevOpsCreateWorkItemSchema = z.object({
   name: z.string().min(1).describe("Work item name/title"),
   description: z.string().optional().describe("Work item description"),
@@ -2766,6 +2772,12 @@ export const CreateMilestoneSchema = z.object({
 export const ScanApexAntipatternsSchema = z.object({
   classNames: z.array(z.string()).optional().describe("Apex class names to scan (omit to scan all)"),
   maxClasses: z.number().int().min(1).max(200).default(20).describe("Maximum number of classes to scan"),
+});
+
+export const RunCodeScannerSchema = z.object({
+  classNames: z.array(z.string()).optional().describe("Apex class names to scan (omit to scan all active classes)"),
+  maxClasses: z.number().int().min(1).max(200).default(20).describe("Maximum number of classes to scan"),
+  ruleSelector: z.array(z.string()).optional().describe("Override rule selectors, e.g. ['pmd:Security', 'eslint:Recommended']. Defaults to 'Recommended' rules, auto-restricted to non-Java engines (eslint, retire-js, regex, flow) if Java isn't detected on the host."),
 });
 
 // ─── CATEGORY A: Visualforce ──────────────────────────────────────────────────

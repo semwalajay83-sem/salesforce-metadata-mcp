@@ -6,10 +6,11 @@ import {
   RunApexTestsSchema,
   ExecuteAnonymousApexSchema,
   ScanApexAntipatternsSchema,
+  RunCodeScannerSchema,
   GetApexClassSchema,
   GetApexTriggerSchema,
 } from "../schemas/index.js";
-import { getAuth, scanApexAntipatterns, getApexClass, getApexTrigger } from "../services/salesforce.js";
+import { getAuth, scanApexAntipatterns, runCodeScanner, getApexClass, getApexTrigger } from "../services/salesforce.js";
 import {
   buildApexClassZip,
   buildApexTriggerZip,
@@ -153,6 +154,25 @@ maxClasses: maximum classes to scan (default 20, max 200)`,
     async (params) => {
       const auth = await getAuth();
       const result = await scanApexAntipatterns(auth, params);
+      return resultContent(result);
+    }
+  );
+
+  server.registerTool(
+    "sf_run_code_scanner",
+    {
+      title: "Run Code Analyzer (PMD/ESLint/RetireJS/SFGE)",
+      description: `Runs Salesforce Code Analyzer against Apex classes in the org — a real multi-engine static analysis scan (PMD rules including ApexCRUDViolation and OperationWithLimitsInLoop, SFGE data-flow analysis for SOQL injection, RetireJS for vulnerable JS libraries, ESLint, and Salesforce's regex engine), on top of the lighter-weight sf_scan_apex_antipatterns heuristic check. Retrieves class bodies via the Tooling API into a temp workspace, runs the scanner, and cleans up afterward. PMD/CPD/SFGE engines require Java 11+ on the host running this MCP server — if Java isn't detected, the scan automatically falls back to the Java-free engines (eslint, retire-js, regex, flow) and flags this in the response rather than failing.
+
+classNames: optional list of class names to scan (omit to scan all active classes)
+maxClasses: maximum classes to scan (default 20, max 200)
+ruleSelector: optional override, e.g. ['pmd:Security'] — defaults to 'Recommended' rules (auto-restricted per the Java note above)`,
+      inputSchema: RunCodeScannerSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async (params) => {
+      const auth = await getAuth();
+      const result = await runCodeScanner(auth, params);
       return resultContent(result);
     }
   );

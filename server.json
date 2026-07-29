@@ -6,12 +6,12 @@
     "url": "https://github.com/semwalajay83-sem/salesforce-metadata-mcp",
     "source": "github"
   },
-  "version": "2.7.0",
+  "version": "2.8.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "salesforce-metadata-mcp",
-      "version": "2.7.0",
+      "version": "2.8.0",
       "transport": {
         "type": "stdio"
       },

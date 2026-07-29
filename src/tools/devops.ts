@@ -5,6 +5,7 @@ import {
   CreatePackageSchema,
   CreatePackageVersionSchema,
   InstallPackageSchema,
+  UninstallPackageSchema,
   DevOpsCreateWorkItemSchema,
   DevOpsPromoteWorkItemSchema,
   CheckCodeCoverageSchema,
@@ -25,6 +26,7 @@ import {
   createPackage,
   createPackageVersion,
   installPackage,
+  uninstallPackage,
   devOpsCreateWorkItem,
   devOpsPromoteWorkItem,
   checkCodeCoverage,
@@ -117,6 +119,21 @@ wait: minutes to wait for installation to complete`,
   }, async (params) => {
     const auth = await getAuth();
     const result = await installPackage(auth, params);
+    return resultContent(result);
+  });
+
+  server.registerTool("sf_uninstall_package", {
+    title: "Uninstall Package",
+    description: `Uninstalls a second-generation package from a target org using the SF CLI. Removes all metadata delivered by the package. Use before reinstalling a broken package, or to clean up a package no longer needed.
+
+packageId: package version ID (04t...) or alias to uninstall
+targetOrg: target org alias (defaults to SF_ALIAS env var)
+wait: minutes to wait for uninstall to complete`,
+    inputSchema: UninstallPackageSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, async (params) => {
+    const auth = await getAuth();
+    const result = await uninstallPackage(auth, params);
     return resultContent(result);
   });
 

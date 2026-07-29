@@ -1,8 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // code-analyzer-suppress(cpd:DetectCopyPasteForTypescript)
 import { execSync } from "child_process";
-import { readFileSync } from "fs";
+import { readFileSync, mkdtempSync, writeFileSync, rmSync, existsSync } from "fs";
 import { createSign } from "crypto";
+import { tmpdir } from "os";
+import { join } from "path";
 import type {
   SalesforceAuth,
   MetadataUpsertResult,
@@ -6202,6 +6204,19 @@ export async function installPackage(_auth: SalesforceAuth, params: Record<strin
     }
 }
 
+export async function uninstallPackage(_auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
+    try {
+        const targetOrg = params.targetOrg ?? process.env["SF_ALIAS"];
+        const args: string[] = ["package", "uninstall", "--package", params.packageId, "--json"];
+        if (targetOrg) args.push("--target-org", targetOrg);
+        if (params.wait) args.push("--wait", String(params.wait));
+        const raw = execSync(`sf ${args.join(" ")}`, { encoding: "utf-8", timeout: 600_000, env: { PATH: process.env["PATH"] ?? "" } });
+        return { success: true, ...(JSON.parse(raw) as { result?: Record<string, unknown> }).result };
+    } catch (err) {
+        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+    }
+}
+
 export async function devOpsCreateWorkItem(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const client = createClient(auth);
@@ -6631,6 +6646,91 @@ export async function scanApexAntipatterns(auth: SalesforceAuth, params: Record<
         return { success: true, classesScanned: resp.data.records.length, findingsCount: findings.length, findings };
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+    }
+}
+
+function isJavaAvailable(): boolean {
+    try {
+        execSync("java -version", { stdio: "ignore", timeout: 10_000 });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+export async function runCodeScanner(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
+    let tempDir: string | null = null;
+    try {
+        const client = createClient(auth);
+        const maxClasses = params.maxClasses ?? 20;
+        let query = "SELECT Id,Name,Body FROM ApexClass WHERE Status = 'Active'";
+        if (params.classNames?.length) {
+            const names = (params.classNames as string[]).map(n => `'${n.replace(/'/g, "\\'")}'`).join(",");
+            query += ` AND Name IN (${names})`;
+        }
+        query += ` LIMIT ${maxClasses}`;
+        const resp = await client.get<{ records: Array<{ Id: string; Name: string; Body: string }> }>(`/services/data/v${API_VERSION}/tooling/query?q=${encodeURIComponent(query)}`);
+        const records = resp.data.records;
+        if (records.length === 0) {
+            return { success: true, classesScanned: 0, findingsCount: 0, findings: [], message: "No matching active Apex classes found to scan." };
+        }
+
+        tempDir = mkdtempSync(join(tmpdir(), "sf-code-scan-"));
+        for (const cls of records) {
+            writeFileSync(join(tempDir, `${cls.Name}.cls`), cls.Body ?? "", "utf-8");
+        }
+
+        const javaAvailable = isJavaAvailable();
+        let ruleSelector: string[] = params.ruleSelector?.length ? params.ruleSelector : ["Recommended"];
+        let javaNote: string | undefined;
+        if (!params.ruleSelector?.length && !javaAvailable) {
+            // pmd/cpd/sfge require Java and throw hard engine-instantiation errors when absent — restrict
+            // to the engines that run without it so results reflect real findings, not missing-Java noise.
+            ruleSelector = ["eslint:Recommended", "retire-js:Recommended", "regex:Recommended", "flow:Recommended"];
+            javaNote = "Java not detected on this host — PMD, CPD, and SFGE engines (including Apex SOQL-injection data-flow analysis) were skipped. Install Java 11+ to enable them for full Apex security coverage.";
+        }
+
+        const outputFile = join(tempDir, "results.json");
+        const args = ["code-analyzer", "run", "--workspace", tempDir, "--target", tempDir, "--output-file", outputFile, "--view", "table"];
+        for (const rs of ruleSelector) args.push("--rule-selector", rs);
+
+        try {
+            execSync(`sf ${args.map(a => `"${a}"`).join(" ")}`, { encoding: "utf-8", timeout: 300_000, env: { PATH: process.env["PATH"] ?? "" } });
+        } catch (runErr) {
+            // code-analyzer exits non-zero when --severity-threshold is met/exceeded; we don't set that
+            // flag, so a non-zero exit here means a real invocation failure, not "violations found".
+            if (!existsSync(outputFile)) {
+                throw runErr;
+            }
+        }
+
+        const raw = readFileSync(outputFile, "utf-8");
+        const parsed = JSON.parse(raw) as { violationCounts?: Record<string, number>; violations?: Array<Record<string, unknown>> };
+        const severityLabels: Record<number, string> = { 1: "Critical", 2: "High", 3: "Moderate", 4: "Low", 5: "Info" };
+        const findings = (parsed.violations ?? []).map(v => ({
+            rule: v["rule"],
+            engine: v["engine"],
+            severity: severityLabels[v["severity"] as number] ?? v["severity"],
+            message: v["message"],
+            locations: v["locations"],
+        }));
+
+        return {
+            success: true,
+            classesScanned: records.length,
+            javaAvailable,
+            enginesUsed: ruleSelector,
+            ...(javaNote ? { note: javaNote } : {}),
+            violationCounts: parsed.violationCounts,
+            findingsCount: findings.length,
+            findings,
+        };
+    } catch (err) {
+        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+    } finally {
+        if (tempDir) {
+            try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+        }
     }
 }
 
