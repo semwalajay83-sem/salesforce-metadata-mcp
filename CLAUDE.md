@@ -60,13 +60,21 @@ Before publishing (only when user asks):
 - `<type>` valid value: `InternalCopilot` — verified from real org retrieve 2026-06-17. EinsteinCopilot is invalid.
 
 ## Known Bugs Pending Fix
-- sf_create_flow: Loop elements cause HTTP 500
-- sf_create_flow: Cross-variable filters use wrong XML type
-- sf_create_flow: Contains operator not supported on GetRecords
-- sf_create_flow: Decision elements generate incorrect XML
-- sf_create_flow: No queriedFields, sortField, sortOrder, limit on GetRecords
-- sf_deploy_metadata: Cannot accept inline XML from chat
-- Missing tool: sf_create_flow_from_xml
+None currently. The list below was retired 2026-07-30 after none of it reproduced against a live
+org (`demo-org`) via the full 33-scenario `qa-flow-test.mjs` suite — 30/30 real scenarios passed
+clean (the only 3 failures reference production flows the suite never creates, unrelated to any
+of these items). Either these were already fixed in an earlier session without updating this file,
+or they were characterized against a different, older code state. Retired items, for reference:
+- ~~sf_create_flow: Loop elements cause HTTP 500~~ — Loop deploys and runs correctly (T17, T18, T29)
+- ~~sf_create_flow: Cross-variable filters use wrong XML type~~ — verified correct for string/number/boolean/elementReference (T04, T05, T11, T12, T23)
+- ~~sf_create_flow: Contains operator not supported on GetRecords~~ — correctly rejected with a clear, actionable error (T19) — this is working-as-designed guardrail behavior, not a defect
+- ~~sf_create_flow: Decision elements generate incorrect XML~~ — verified correct for EqualTo/IsNull/GreaterThan/variable-reference/multi-rule (T09–T13)
+- ~~sf_create_flow: No queriedFields, sortField, sortOrder, limit on GetRecords~~ — queriedFields/sort verified working (T07, T08, T30); `limit` is correctly rejected with a helpful error since it isn't supported by the Metadata API at all (T06) — use the Loop-counter pattern instead (T29)
+- ~~sf_deploy_metadata: Cannot accept inline XML from chat~~ — already supported via the `componentsXml` param
+- ~~Missing tool: sf_create_flow_from_xml~~ — exists and works (T24–T26)
+
+If a Flow-related bug report comes in, verify it reproduces against a live org before assuming this
+list — don't just re-add items from memory.
 
 ## Claude Code Preferences
 - Full autonomy, zero permission prompts
