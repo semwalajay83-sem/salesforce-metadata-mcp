@@ -180,6 +180,7 @@ export const FlowElementSchema = z.object({
     "Decision",
     "GetRecords",
     "CreateRecords",
+    "UpdateRecords",
     "DeleteRecords",
     "SendEmailAlert",
     "ApexAction",
@@ -269,6 +270,36 @@ export const CreateFlowSchema = z.object({
   triggerType: z.enum(["RecordBeforeSave", "RecordAfterSave", "RecordBeforeDelete"])
     .optional()
     .describe("When to trigger: RecordBeforeSave, RecordAfterSave, RecordBeforeDelete"),
+  recordTriggerType: z.enum(["Create", "Update", "CreateAndUpdate", "Delete"])
+    .optional()
+    .describe("Which record changes fire the flow: 'Create' (new records only), 'Update' (edits only), 'CreateAndUpdate' (default), 'Delete'. Ignored for RecordBeforeDelete, which is already delete-only."),
+  scheduleFrequency: z.enum(["Once", "Daily", "Weekly"]).optional()
+    .describe("How often a ScheduledFlow runs. Defaults to Daily."),
+  scheduleStartDate: z.string().optional()
+    .describe("Date a ScheduledFlow starts running, YYYY-MM-DD. Defaults to today."),
+  scheduleStartTime: z.string().optional()
+    .describe("Time of day a ScheduledFlow runs, e.g. '13:00:00.000Z'. Defaults to midnight UTC."),
+  formulas: z.array(z.object({
+    name: z.string().min(1).describe("Formula resource API name, e.g. 'Full_Name'"),
+    dataType: z.enum(["String", "Number", "Boolean", "Date", "DateTime", "Currency"])
+      .describe("Type the formula evaluates to"),
+    expression: z.string().min(1)
+      .describe("Formula expression using flow merge syntax, e.g. \"{!$Record.FirstName} & ' ' & {!$Record.LastName}\""),
+    scale: z.number().int().min(0).max(17).optional()
+      .describe("Decimal places for Number/Currency formulas (default 2)"),
+  })).optional().describe("Formula resources — recalculated every time they are referenced. Use for derived values instead of an Assignment when the value should always reflect current data."),
+  constants: z.array(z.object({
+    name: z.string().min(1).describe("Constant API name, e.g. 'Max_Discount'"),
+    dataType: z.enum(["String", "Number", "Boolean", "Date", "DateTime", "Currency"])
+      .describe("Type of the constant"),
+    value: z.string().describe("Fixed value, as a string; it is converted to the right XML value type"),
+  })).optional().describe("Constant resources — fixed values that never change during the flow run."),
+  textTemplates: z.array(z.object({
+    name: z.string().min(1).describe("Text template API name, e.g. 'Email_Body'"),
+    text: z.string().describe("Template body; may embed merge fields like {!$Record.Name}"),
+    isViewedAsPlainText: z.boolean().optional()
+      .describe("true (default) for plain text, false for rich text/HTML"),
+  })).optional().describe("Text template resources — reusable text blocks with merge fields, typically for email bodies."),
   triggerFilterFormula: z.string().optional()
     .describe("Formula to filter which records trigger the flow, e.g. \"ISPICKVAL(StageName,'Closed Won')\""),
   fieldUpdates: z.array(z.object({
@@ -277,7 +308,7 @@ export const CreateFlowSchema = z.object({
     formula: z.string().optional().describe("Formula for the value, e.g. 'TODAY()'"),
   })).optional().describe("Simple field updates on the triggering record (for RecordTriggeredFlow)"),
   elements: z.array(FlowElementSchema).optional()
-    .describe("Advanced flow elements: Decision, GetRecords, CreateRecords, DeleteRecords, SendEmailAlert, ApexAction, Subflow, Loop, Assignment, Screen, Wait, PlatformEvent"),
+    .describe("Advanced flow elements: Decision, GetRecords, CreateRecords, UpdateRecords, DeleteRecords, SendEmailAlert, ApexAction, Subflow, Loop, Assignment, Screen. (Wait and PlatformEvent are not supported — they produced invalid XML and were removed.)"),
   variables: z.array(FlowVariableSchema).optional().describe("Input/output variables"),
   status: z.enum(["Draft", "Active"]).default("Draft").describe("Flow activation status. IMPORTANT: Agentforce agents can ONLY invoke Active flows — Draft flows are invisible to agents and will cause silent failures. Set to 'Active' when creating flows for agent actions."),
   submitForApprovalProcessName: z.string().optional().describe("API name of the Approval Process to automatically submit the record into. Works with any approval process — just pass its API name."),

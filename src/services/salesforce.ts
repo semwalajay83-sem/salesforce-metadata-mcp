@@ -563,10 +563,24 @@ function buildSimpleFieldsXml(fields: SimpleField[]): string {
   }).join("\n");
 }
 
+// Salesforce's FlowProcessType enum has no RecordTriggeredFlow or ScheduledFlow member — both are
+// AutoLaunchedFlow at the process level and are distinguished only by the <start> element's
+// triggerType. Emitting the caller-facing flowType verbatim makes the deploy fail at parse time.
+function toProcessType(flowType: string): string {
+  return flowType === "RecordTriggeredFlow" || flowType === "ScheduledFlow"
+    ? "AutoLaunchedFlow"
+    : flowType;
+}
+
 function buildFlowXml(params: {
   label: string; apiName: string; description?: string;
   flowType: string; triggerObject?: string; triggerType?: string;
   triggerFilterFormula?: string; status: string;
+  recordTriggerType?: string;
+  scheduleStartDate?: string; scheduleStartTime?: string; scheduleFrequency?: string;
+  formulas?: Array<{ name: string; dataType: string; expression: string; scale?: number }>;
+  constants?: Array<{ name: string; dataType: string; value: string }>;
+  textTemplates?: Array<{ name: string; text: string; isViewedAsPlainText?: boolean }>;
   variables?: Array<{ name: string; dataType: string; objectType?: string; isInput: boolean; isOutput: boolean; isCollection: boolean; defaultStringValue?: string }>;
   fieldUpdates?: Array<{ field: string; value?: string; formula?: string }>;
   elements?: Array<{
@@ -599,9 +613,13 @@ function buildFlowXml(params: {
     </met:variables>`).join("\n");
 
   // Process elements and group by type — Salesforce requires all elements of the same type to be contiguous in the XML.
-  const buildElements = (elements: typeof params.elements): string => {
-    if (!elements || elements.length === 0) return "";
-    const groups: Record<string, string[]> = { actionCalls: [], assignments: [], decisions: [], loops: [], recordCreates: [], recordDeletes: [], recordLookups: [], screens: [], subflows: [] };
+  const buildElements = (elements: typeof params.elements, extras?: { actionCalls?: string; recordUpdates?: string }): string => {
+    const groups: Record<string, string[]> = { actionCalls: [], assignments: [], decisions: [], loops: [], recordCreates: [], recordDeletes: [], recordLookups: [], recordUpdates: [], screens: [], subflows: [] };
+    if (extras?.actionCalls) groups["actionCalls"].push(extras.actionCalls);
+    if (extras?.recordUpdates) groups["recordUpdates"].push(extras.recordUpdates);
+    if (!elements || elements.length === 0) {
+      return ["actionCalls", "recordUpdates"].flatMap(k => groups[k]).join("\n");
+    }
     elements.map((el, idx) => {
       const connector = el.nextElement
         ? `<met:connector><met:targetReference>${x(el.nextElement)}</met:targetReference></met:connector>` : "";
@@ -708,6 +726,38 @@ function buildFlowXml(params: {
             <met:object>${x(el.objectApiName ?? "")}</met:object>${soapInputAssignXml}
             ${connector}
           </met:recordCreates>`;
+        }
+        case "UpdateRecords": {
+          const soapTypedVal = (v: string | undefined): string => {
+            if (v === undefined) return `<met:stringValue></met:stringValue>`;
+            if (v === "true" || v === "false") return `<met:booleanValue>${v}</met:booleanValue>`;
+            if (/^-?\d+(\.\d+)?$/.test(v)) return `<met:numberValue>${v}</met:numberValue>`;
+            return `<met:stringValue>${x(v)}</met:stringValue>`;
+          };
+          const updAssign = (el.inputAssignments ?? []).map(a => `
+            <met:inputAssignments>
+              <met:field>${x(a.field)}</met:field>
+              <met:value>${a.valueRef ? `<met:elementReference>${x(a.valueRef)}</met:elementReference>` : soapTypedVal(a.value)}</met:value>
+            </met:inputAssignments>`).join("");
+          // Two addressing modes: update a record already held in a variable (inputReference), or
+          // update every record matching criteria (object + filters). They are mutually exclusive.
+          const updFilters = (el.filters ?? []).map(f => `
+            <met:filters>
+              <met:field>${x(f.field)}</met:field>
+              <met:operator>${x(f.operator)}</met:operator>
+              <met:value>${f.valueRef ? `<met:elementReference>${x(f.valueRef)}</met:elementReference>` : soapTypedVal(f.value)}</met:value>
+            </met:filters>`).join("");
+          const updTarget = el.inputReference
+            ? `<met:inputReference>${x(el.inputReference)}</met:inputReference>`
+            : `<met:object>${x(el.objectApiName ?? "")}</met:object>${updFilters}${(el.filters ?? []).length > 1 ? `<met:filterLogic>and</met:filterLogic>` : ""}`;
+          return `<met:recordUpdates>
+            <met:name>${x(el.name)}</met:name>
+            <met:label>${x(el.label)}</met:label>
+            <met:locationX>${50 + idx * 200}</met:locationX>
+            <met:locationY>180</met:locationY>
+            ${updTarget}${updAssign}
+            ${connector}
+          </met:recordUpdates>`;
         }
         case "DeleteRecords":
           return `<met:recordDeletes>
@@ -816,11 +866,12 @@ function buildFlowXml(params: {
         SendEmailAlert: "actionCalls", ApexAction: "actionCalls",
         Assignment: "assignments", Decision: "decisions", Loop: "loops",
         CreateRecords: "recordCreates", DeleteRecords: "recordDeletes",
+        UpdateRecords: "recordUpdates",
         GetRecords: "recordLookups", Screen: "screens", Subflow: "subflows",
       };
       if (xml && typeMap[el.type]) groups[typeMap[el.type]].push(xml);
     });
-    return ["actionCalls", "assignments", "decisions", "loops", "recordCreates", "recordDeletes", "recordLookups", "screens", "subflows"]
+    return ["actionCalls", "assignments", "decisions", "loops", "recordCreates", "recordDeletes", "recordLookups", "recordUpdates", "screens", "subflows"]
       .flatMap(k => groups[k]).join("\n");
   };
 
@@ -835,13 +886,29 @@ function buildFlowXml(params: {
 
   const startConnector = firstTarget
     ? `<met:connector><met:targetReference>${firstTarget}</met:targetReference></met:connector>` : "";
+  // RecordBeforeDelete has no recordTriggerType in the MDAPI — Salesforce rejects the element when
+  // it is present, since "before delete" already fully describes when the flow runs.
+  const soapRecordTriggerType = params.triggerType === "RecordBeforeDelete"
+    ? ""
+    : `<met:recordTriggerType>${x(params.recordTriggerType ?? "CreateAndUpdate")}</met:recordTriggerType>`;
   const startElement = params.flowType === "RecordTriggeredFlow" && params.triggerObject ? `
     <met:start>
       <met:locationX>50</met:locationX><met:locationY>0</met:locationY>
       <met:object>${x(params.triggerObject)}</met:object>
-      <met:recordTriggerType>CreateAndUpdate</met:recordTriggerType>
+      ${soapRecordTriggerType}
       <met:triggerType>${x(params.triggerType ?? "RecordAfterSave")}</met:triggerType>
       ${params.triggerFilterFormula ? `<met:filterFormula>${x(params.triggerFilterFormula)}</met:filterFormula>` : ""}
+      ${startConnector}
+    </met:start>` : params.flowType === "ScheduledFlow" ? `
+    <met:start>
+      <met:locationX>50</met:locationX><met:locationY>0</met:locationY>
+      ${params.triggerObject ? `<met:object>${x(params.triggerObject)}</met:object>` : ""}
+      <met:schedule>
+        <met:frequency>${x(params.scheduleFrequency ?? "Daily")}</met:frequency>
+        <met:startDate>${x(params.scheduleStartDate ?? new Date().toISOString().slice(0, 10))}</met:startDate>
+        <met:startTime>${x(params.scheduleStartTime ?? "00:00:00.000Z")}</met:startTime>
+      </met:schedule>
+      <met:triggerType>Scheduled</met:triggerType>
       ${startConnector}
     </met:start>` : `
     <met:start>
@@ -887,20 +954,61 @@ function buildFlowXml(params: {
         </met:inputAssignments>`).join("\n")}
     </met:recordUpdates>` : "";
 
+  const soapFormulas = (params.formulas ?? []).map(f => `
+    <met:formulas>
+      <met:name>${x(f.name)}</met:name>
+      <met:dataType>${x(f.dataType)}</met:dataType>
+      <met:expression>${x(f.expression)}</met:expression>
+      ${f.dataType === "Number" || f.dataType === "Currency" ? `<met:scale>${f.scale ?? 2}</met:scale>` : ""}
+    </met:formulas>`).join("\n");
+
+  const soapConstants = (params.constants ?? []).map(c => `
+    <met:constants>
+      <met:name>${x(c.name)}</met:name>
+      <met:dataType>${x(c.dataType)}</met:dataType>
+      <met:value>${typedResourceValue(c.dataType, c.value, "met:")}</met:value>
+    </met:constants>`).join("\n");
+
+  const soapTextTemplates = (params.textTemplates ?? []).map(t => `
+    <met:textTemplates>
+      <met:name>${x(t.name)}</met:name>
+      <met:isViewedAsPlainText>${t.isViewedAsPlainText === false ? "false" : "true"}</met:isViewedAsPlainText>
+      <met:text>${x(t.text)}</met:text>
+    </met:textTemplates>`).join("\n");
+
   return `<met:metadata xsi:type="met:Flow" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.apiName)}</met:fullName>
     <met:label>${x(params.label)}</met:label>
     <met:apiVersion>${API_VERSION}</met:apiVersion>
     <met:status>${x(params.status)}</met:status>
-    <met:processType>${x(params.flowType)}</met:processType>
+    <met:processType>${x(toProcessType(params.flowType))}</met:processType>
     <met:environments>Default</met:environments>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+    ${soapConstants}
+    ${soapFormulas}
+    ${soapTextTemplates}
     ${vars}
     ${startElement}
-    ${buildElements(params.elements)}
-    ${approvalSubmitElement}
-    ${recordUpdateElement}
+    ${buildElements(params.elements, { actionCalls: approvalSubmitElement, recordUpdates: recordUpdateElement })}
   </met:metadata>`;
+}
+
+// Constants and other typed resources need the value wrapped in a type-specific tag; a bare
+// stringValue on a Number constant deploys but silently coerces at runtime.
+function typedResourceValue(dataType: string, value: string, prefix: string): string {
+  switch (dataType) {
+    case "Number":
+    case "Currency":
+      return `<${prefix}numberValue>${x(value)}</${prefix}numberValue>`;
+    case "Boolean":
+      return `<${prefix}booleanValue>${value === "true" ? "true" : "false"}</${prefix}booleanValue>`;
+    case "Date":
+      return `<${prefix}dateValue>${x(value)}</${prefix}dateValue>`;
+    case "DateTime":
+      return `<${prefix}dateTimeValue>${x(value)}</${prefix}dateTimeValue>`;
+    default:
+      return `<${prefix}stringValue>${x(value)}</${prefix}stringValue>`;
+  }
 }
 
 // Builds zip-deploy format Flow XML with elements grouped by type (required by Salesforce metadata schema).
@@ -924,6 +1032,7 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
   const loops: string[] = [];
   const recordCreates: string[] = [];
   const recordDeletes: string[] = [];
+  const recordUpdates: string[] = [];
   const recordLookups: string[] = [];
   const screens: string[] = [];
   const subflows: string[] = [];
@@ -1080,6 +1189,39 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
   </recordCreates>`);
         break;
       }
+      case "UpdateRecords": {
+        const upTypedVal = (v: string | undefined): string => {
+          if (v === undefined) return `<stringValue></stringValue>`;
+          if (v === "true" || v === "false") return `<booleanValue>${v}</booleanValue>`;
+          if (/^-?\d+(\.\d+)?$/.test(v)) return `<numberValue>${v}</numberValue>`;
+          return `<stringValue>${x(v)}</stringValue>`;
+        };
+        const upAssign = (el.inputAssignments ?? []).map(a => `
+    <inputAssignments>
+      <field>${x(a.field)}</field>
+      <value>${a.valueRef ? `<elementReference>${x(a.valueRef)}</elementReference>` : upTypedVal(a.value)}</value>
+    </inputAssignments>`).join("");
+        const upFilters = (el.filters ?? []).map(f => `
+    <filters>
+      <field>${x(f.field)}</field>
+      <operator>${x(f.operator)}</operator>
+      <value>${f.valueRef ? `<elementReference>${x(f.valueRef)}</elementReference>` : upTypedVal(f.value)}</value>
+    </filters>`).join("");
+        // Either update a record already in a variable, or update everything matching criteria.
+        const upTarget = el.inputReference
+          ? `<inputReference>${x(el.inputReference)}</inputReference>`
+          : `<object>${x(el.objectApiName ?? "")}</object>${upFilters}${(el.filters ?? []).length > 1 ? `<filterLogic>and</filterLogic>` : ""}`;
+        recordUpdates.push(`
+  <recordUpdates>
+    <name>${x(el.name)}</name>
+    <label>${x(el.label)}</label>
+    <locationX>${50 + idx * 200}</locationX>
+    <locationY>180</locationY>
+    ${upTarget}${upAssign}
+    ${conn}
+  </recordUpdates>`);
+        break;
+      }
       case "DeleteRecords":
         recordDeletes.push(`
   <recordDeletes>
@@ -1191,13 +1333,28 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
       </value>
     </inputAssignments>`).join("\n")}
   </recordUpdates>` : "";
+  const zipRecordTriggerType = params.triggerType === "RecordBeforeDelete"
+    ? ""
+    : `<recordTriggerType>${x(params.recordTriggerType ?? "CreateAndUpdate")}</recordTriggerType>`;
   const startXml = params.flowType === "RecordTriggeredFlow" && params.triggerObject
     ? `<start>
     <locationX>50</locationX><locationY>0</locationY>
     <object>${x(params.triggerObject)}</object>
-    <recordTriggerType>CreateAndUpdate</recordTriggerType>
+    ${zipRecordTriggerType}
     <triggerType>${x(triggerType)}</triggerType>
     ${params.triggerFilterFormula ? `<filterFormula>${x(params.triggerFilterFormula)}</filterFormula>` : ""}
+    ${startConn}
+  </start>`
+    : params.flowType === "ScheduledFlow"
+    ? `<start>
+    <locationX>50</locationX><locationY>0</locationY>
+    ${params.triggerObject ? `<object>${x(params.triggerObject)}</object>` : ""}
+    <schedule>
+      <frequency>${x(params.scheduleFrequency ?? "Daily")}</frequency>
+      <startDate>${x(params.scheduleStartDate ?? new Date().toISOString().slice(0, 10))}</startDate>
+      <startTime>${x(params.scheduleStartTime ?? "00:00:00.000Z")}</startTime>
+    </schedule>
+    <triggerType>Scheduled</triggerType>
     ${startConn}
   </start>`
     : `<start>
@@ -1210,20 +1367,38 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
   <apiVersion>${API_VERSION}</apiVersion>
   <environments>Default</environments>
   <label>${x(params.label)}</label>
-  <processType>${x(params.flowType)}</processType>
+  <processType>${x(toProcessType(params.flowType))}</processType>
   <status>${x(params.status)}</status>
   ${params.description ? `<description>${x(params.description)}</description>` : ""}
+  ${(params.constants ?? []).map(c => `
+  <constants>
+    <name>${x(c.name)}</name>
+    <dataType>${x(c.dataType)}</dataType>
+    <value>${typedResourceValue(c.dataType, c.value, "")}</value>
+  </constants>`).join("")}
+  ${(params.formulas ?? []).map(f => `
+  <formulas>
+    <name>${x(f.name)}</name>
+    <dataType>${x(f.dataType)}</dataType>
+    <expression>${x(f.expression)}</expression>
+    ${f.dataType === "Number" || f.dataType === "Currency" ? `<scale>${f.scale ?? 2}</scale>` : ""}
+  </formulas>`).join("")}
+  ${(params.textTemplates ?? []).map(t => `
+  <textTemplates>
+    <name>${x(t.name)}</name>
+    <isViewedAsPlainText>${t.isViewedAsPlainText === false ? "false" : "true"}</isViewedAsPlainText>
+    <text>${x(t.text)}</text>
+  </textTemplates>`).join("")}
   ${vars}
   ${startXml}
-  ${approvalSubmitXml}
-  ${recordUpdateXml}
-  ${actionCalls.join("")}
+  ${[approvalSubmitXml, ...actionCalls].join("")}
   ${assignments.join("")}
   ${decisions.join("")}
   ${loops.join("")}
   ${recordCreates.join("")}
   ${recordDeletes.join("")}
   ${recordLookups.join("")}
+  ${[recordUpdateXml, ...recordUpdates].join("")}
   ${screens.join("")}
   ${subflows.join("")}
 </Flow>`;
@@ -2203,6 +2378,22 @@ export async function createFlow(auth: SalesforceAuth, params: Parameters<typeof
   const unsupportedFilterOps = ["Contains", "NotContain", "NotContains", "DoesNotContain"];
   const supportedOps = "EqualTo, NotEqualTo, GreaterThan, LessThan, GreaterThanOrEqualTo, LessThanOrEqualTo, IsNull, StartsWith, EndsWith";
   for (const el of (params.elements ?? [])) {
+    if (el.type === "UpdateRecords") {
+      // Salesforce rejects a record update that both points at an SObject variable and carries field
+      // assignments — when updating by reference the values must already be on the variable.
+      if (el.inputReference && (el.inputAssignments ?? []).length > 0) {
+        return {
+          success: false,
+          message: `UpdateRecords element '${el.name}' sets both inputReference ('${el.inputReference}') and inputAssignments. Salesforce allows only one: either update the record held in a variable (set its fields with an Assignment element first, then pass inputReference alone), or update by criteria (pass objectApiName + filters + inputAssignments).`,
+        };
+      }
+      if (!el.inputReference && !el.objectApiName) {
+        return {
+          success: false,
+          message: `UpdateRecords element '${el.name}' needs either inputReference (a variable holding the record(s) to update) or objectApiName plus filters (update every record matching criteria).`,
+        };
+      }
+    }
     if (el.type === "GetRecords") {
       const allFilters: Array<{ operator: string }> = [
         ...(el.filterField ? [{ operator: el.filterOperator ?? "EqualTo" }] : []),
