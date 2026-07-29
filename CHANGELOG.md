@@ -2,16 +2,23 @@
 
 ## [2.8.1] - 2026-07-29
 
-### Fixed — 3 real bugs found by live-org testing of v2.8.0, same day
+### Fixed — 5 real bugs found by thorough live-org testing of v2.8.0, same day
 
-Ajay pointed live testing at a working CLI-authenticated org (`demo-org`) after v2.8.0 shipped without it (see prior entry). Testing immediately surfaced genuine defects:
+Ajay pointed live testing at a working CLI-authenticated org (`demo-org`) after v2.8.0 shipped without it, then asked for thorough testing before this patch went out. Testing surfaced genuine defects:
 
 - **`sf_run_code_scanner` returned 404 against every org** — its Tooling API query path double-prefixed `/services/data/v66.0` (the HTTP client's base URL already includes it). Copied this bug from `sf_scan_apex_antipatterns`.
 - **`sf_scan_apex_antipatterns` has had the identical 404 bug since it shipped in v2.7.0 (2026-07-23)** — it was never tested against a live org before now, so this went undetected for 6 days across two releases. Fixed alongside the copy.
 - **`sf_run_code_scanner`'s Java-fallback was cosmetic, not functional** — restricting `--rule-selector` to Java-free engines doesn't stop `code-analyzer` from still trying to *instantiate* the PMD/CPD/SFGE engines first, so it threw 3 "Critical" `UninstantiableEngineError` pseudo-violations even while the response's own `note` field claimed those engines "were skipped." Fixed by generating a `code-analyzer.yml` that explicitly sets `disable_engine: true` on each when Java isn't detected — verified clean (0 fake violations) against `demo-org`.
-- **Bonus, same root cause:** every SF-CLI-wrapping function (`installPackage`, `uninstallPackage`, `createPackage`, `createPackageVersion`, `deleteScratchOrg`, `createNewScratchOrg`) swallowed the actual Salesforce error on failure — Node's `execSync` puts the CLI's `--json` error payload on `err.stdout`, not `err.message`, so callers only ever saw a generic "Command failed: sf package ..." with no reason. Extracted a shared `execSfCli()` helper that parses `err.stdout` first; verified live by attempting to uninstall `demo-org`'s installed package and correctly receiving the real Salesforce reason ("Unable to delete custom app. Profiles are using this custom app as default...") instead of the useless wrapper text.
+- **Every SF-CLI-wrapping function (`installPackage`, `uninstallPackage`, `createPackage`, `createPackageVersion`, `deleteScratchOrg`, `createNewScratchOrg`) swallowed the actual Salesforce error on failure** — Node's `execSync` puts the CLI's `--json` error payload on `err.stdout`, not `err.message`, so callers only ever saw a generic "Command failed: sf package ..." with no reason. Extracted a shared `execSfCli()` helper that parses `err.stdout` first; verified live by attempting to uninstall `demo-org`'s installed package and correctly receiving the real Salesforce reason ("Unable to delete custom app. Profiles are using this custom app as default...") instead of the useless wrapper text.
+- **`sf_install_package` (pre-existing, not something this session touched originally) hung/force-failed on any package requesting third-party site access** — `sf package install` shows an interactive "Grant access?" confirmation for Remote Site Settings/CSP, which `execSync`'s non-interactive session can never answer, throwing `ExitPromptError`. Fixed by always passing `--no-prompt` (there's no scenario where an MCP tool call can answer an interactive prompt, so this is correct unconditionally, not just a default).
 
-All three fixes verified against `demo-org`: `sf_run_code_scanner` now returns real findings (4 classes scanned, 0 violations, accurate `note`); `sf_scan_apex_antipatterns` likewise; `sf_uninstall_package`'s failure path now surfaces the actual multi-component Salesforce error. A full install→uninstall→reinstall success-path round-trip wasn't possible in this org (its one installed package is protected by the same profile/permission-set guards the test surfaced), but the failure path — which is exactly where the original bug hid — is now proven correct with real data.
+**All fixes verified against `demo-org` with real success AND failure paths, not just one or the other:**
+- `sf_run_code_scanner` / `sf_scan_apex_antipatterns`: real findings returned (4 classes scanned, 0 violations, accurate `note`)
+- `sf_uninstall_package`: failure path confirmed — real multi-component Salesforce rejection reason now surfaces correctly
+- `sf_install_package`: **full success path confirmed** — real install against `demo-org` returned `Status: "SUCCESS"` end to end, only possible after the `--no-prompt` fix
+- Broader regression sanity: unrelated, untouched tools (`sf_query_records`, `sf_describe_object`) spot-checked against the same org to confirm the shared auth/HTTP client plumbing wasn't affected
+
+**Known remaining gap, documented not hidden:** `createNewScratchOrg`/`deleteScratchOrg`/`createPackage`/`createPackageVersion` could not be exercised live — `demo-org` is not Dev Hub-enabled, and creating one is out of scope for a same-day bug-fix pass. Their `execSfCli` usage is mechanically identical to `installPackage`'s (now proven), so risk is low, but this is explicitly unverified, not silently assumed fine.
 
 ## [2.8.0] - 2026-07-29
 

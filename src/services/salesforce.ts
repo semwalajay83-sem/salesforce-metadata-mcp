@@ -6199,7 +6199,11 @@ export async function createPackageVersion(_auth: SalesforceAuth, params: Record
 
 export async function installPackage(_auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     const targetOrg = params.targetOrg ?? process.env["SF_ALIAS"];
-    const args: string[] = ["package", "install", "--package", params.packageId, "--json"];
+    // --no-prompt is mandatory here, not optional: `sf package install` shows an interactive
+    // Remote-Site-Settings/CSP confirmation for any package that talks to third-party sites, and
+    // since this runs via non-interactive execSync there's no way to answer it — without this flag
+    // the command hangs/force-fails (ExitPromptError) for most real-world packages.
+    const args: string[] = ["package", "install", "--package", params.packageId, "--json", "--no-prompt"];
     if (targetOrg) args.push("--target-org", targetOrg);
     if (params.installationKey) args.push("--installation-key", params.installationKey);
     if (params.wait) args.push("--wait", String(params.wait));
