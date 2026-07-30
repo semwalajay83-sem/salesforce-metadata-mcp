@@ -572,6 +572,19 @@ function toProcessType(flowType: string): string {
     : flowType;
 }
 
+/**
+ * FlowComparisonOperator has no IsNotNull member — "is not null" is expressed as IsNull compared
+ * against false. Callers naturally write IsNotNull (the schema advertises it), so translate rather
+ * than reject. Both null operators need a booleanValue right side; an omitted value means "true".
+ * Returns null for any operator that isn't a null check, so callers fall through to normal handling.
+ */
+function nullOperatorXml(operator: string, rightValue?: string): { operator: string; booleanValue: string } | null {
+  if (operator !== "IsNull" && operator !== "IsNotNull") return null;
+  const asserted = rightValue !== "false";
+  const isNull = operator === "IsNotNull" ? !asserted : asserted;
+  return { operator: "IsNull", booleanValue: String(isNull) };
+}
+
 function buildFlowXml(params: {
   label: string; apiName: string; description?: string;
   flowType: string; triggerObject?: string; triggerType?: string;
@@ -625,7 +638,6 @@ function buildFlowXml(params: {
         ? `<met:connector><met:targetReference>${x(el.nextElement)}</met:targetReference></met:connector>` : "";
       switch (el.type) {
         case "Decision": {
-          const isNullOps = new Set(["IsNull", "IsNotNull"]);
           const soapTypedRv = (v: string | undefined): string => {
             if (v === "true" || v === "false") return `<met:booleanValue>${v}</met:booleanValue>`;
             if (v !== undefined && /^-?\d+(\.\d+)?$/.test(v)) return `<met:numberValue>${v}</met:numberValue>`;
@@ -635,12 +647,9 @@ function buildFlowXml(params: {
             const ruleLabel = c.label ?? c.rightValue ?? `Rule_${i + 1}`;
             const ruleConnector = c.nextElement
               ? `<met:connector><met:targetReference>${x(c.nextElement)}</met:targetReference></met:connector>` : "";
-            // FlowComparisonOperator has no IsNotNull member — "is not null" is expressed as
-            // IsNull compared against false. Translate rather than reject, since IsNotNull is the
-            // natural thing for a caller to write and the intent is unambiguous.
-            const isNotNull = c.operator === "IsNotNull";
-            const rightValueXml = isNullOps.has(c.operator)
-              ? `<met:booleanValue>${isNotNull ? (c.rightValue === "false" ? "true" : "false") : (c.rightValue === "false" ? "false" : "true")}</met:booleanValue>`
+            const nullOp = nullOperatorXml(c.operator, c.rightValue);
+            const rightValueXml = nullOp
+              ? `<met:booleanValue>${nullOp.booleanValue}</met:booleanValue>`
               : c.rightValueRef
                 ? `<met:elementReference>${x(c.rightValueRef)}</met:elementReference>`
                 : soapTypedRv(c.rightValue);
@@ -651,7 +660,7 @@ function buildFlowXml(params: {
               <met:conditionLogic>and</met:conditionLogic>
               <met:conditions>
                 <met:leftValueReference>${x(c.leftValueRef)}</met:leftValueReference>
-                <met:operator>${x(isNotNull ? "IsNull" : c.operator)}</met:operator>
+                <met:operator>${x(nullOp ? nullOp.operator : c.operator)}</met:operator>
                 <met:rightValue>${rightValueXml}</met:rightValue>
               </met:conditions>
               ${ruleConnector}
@@ -680,11 +689,14 @@ function buildFlowXml(params: {
             allFilters.push({ field: el.filterField, operator: el.filterOperator ?? "EqualTo", value: el.filterValue, valueRef: el.filterValueRef });
           }
           for (const f of (el.filters ?? [])) allFilters.push(f);
-          const filtersXml = allFilters.map(f => `<met:filters>
+          const filtersXml = allFilters.map(f => {
+            const nullOp = nullOperatorXml(f.operator, f.value);
+            return `<met:filters>
               <met:field>${x(f.field)}</met:field>
-              <met:operator>${x(f.operator)}</met:operator>
-              <met:value>${buildFilterValue(f.value, f.valueRef)}</met:value>
-            </met:filters>`).join("\n            ");
+              <met:operator>${x(nullOp ? nullOp.operator : f.operator)}</met:operator>
+              <met:value>${nullOp ? `<met:booleanValue>${nullOp.booleanValue}</met:booleanValue>` : buildFilterValue(f.value, f.valueRef)}</met:value>
+            </met:filters>`;
+          }).join("\n            ");
           const soapHasQF = el.queriedFields && el.queriedFields.length > 0;
           const queriedFieldsXml = soapHasQF
             ? [...new Set(["Id", ...el.queriedFields!])].map(f => `<met:queriedFields>${x(f)}</met:queriedFields>`).join("\n            ")
@@ -745,12 +757,17 @@ function buildFlowXml(params: {
             </met:inputAssignments>`).join("");
           // Two addressing modes: update a record already held in a variable (inputReference), or
           // update every record matching criteria (object + filters). They are mutually exclusive.
-          const updFilters = (el.filters ?? []).map(f => `
+          const updFilters = (el.filters ?? []).map(f => {
+            const nullOp = nullOperatorXml(f.operator, f.value);
+            return `
             <met:filters>
               <met:field>${x(f.field)}</met:field>
-              <met:operator>${x(f.operator)}</met:operator>
-              <met:value>${f.valueRef ? `<met:elementReference>${x(f.valueRef)}</met:elementReference>` : soapTypedVal(f.value)}</met:value>
-            </met:filters>`).join("");
+              <met:operator>${x(nullOp ? nullOp.operator : f.operator)}</met:operator>
+              <met:value>${nullOp
+                ? `<met:booleanValue>${nullOp.booleanValue}</met:booleanValue>`
+                : f.valueRef ? `<met:elementReference>${x(f.valueRef)}</met:elementReference>` : soapTypedVal(f.value)}</met:value>
+            </met:filters>`;
+          }).join("");
           const updTarget = el.inputReference
             ? `<met:inputReference>${x(el.inputReference)}</met:inputReference>`
             : `<met:object>${x(el.objectApiName ?? "")}</met:object>${updFilters}${(el.filters ?? []).length > 1 ? `<met:filterLogic>and</met:filterLogic>` : ""}`;
@@ -1080,18 +1097,15 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
         break;
       }
       case "Decision": {
-        const isNullOps = new Set(["IsNull", "IsNotNull"]);
         const typedRv = (v: string | undefined): string => {
           if (v === "true" || v === "false") return `<booleanValue>${v}</booleanValue>`;
           if (v !== undefined && /^-?\d+(\.\d+)?$/.test(v)) return `<numberValue>${v}</numberValue>`;
           return `<stringValue>${x(v ?? "")}</stringValue>`;
         };
         const rules = (el.conditions ?? []).map((c, i) => {
-          // See the SOAP builder: FlowComparisonOperator has no IsNotNull, so it becomes
-          // IsNull compared against the inverted boolean.
-          const isNotNull = c.operator === "IsNotNull";
-          const rv = isNullOps.has(c.operator)
-            ? `<booleanValue>${isNotNull ? (c.rightValue === "false" ? "true" : "false") : (c.rightValue === "false" ? "false" : "true")}</booleanValue>`
+          const nullOp = nullOperatorXml(c.operator, c.rightValue);
+          const rv = nullOp
+            ? `<booleanValue>${nullOp.booleanValue}</booleanValue>`
             : c.rightValueRef ? `<elementReference>${x(c.rightValueRef)}</elementReference>` : typedRv(c.rightValue);
           const rc = c.nextElement ? `<connector><targetReference>${x(c.nextElement)}</targetReference></connector>` : "";
           return `
@@ -1101,7 +1115,7 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
       <conditionLogic>and</conditionLogic>
       <conditions>
         <leftValueReference>${x(c.leftValueRef)}</leftValueReference>
-        <operator>${x(c.operator)}</operator>
+        <operator>${x(nullOp ? nullOp.operator : c.operator)}</operator>
         <rightValue>${rv}</rightValue>
       </conditions>
       ${rc}
@@ -1142,8 +1156,11 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
         if (el.filterField) allFilters.push({ field: el.filterField, operator: el.filterOperator ?? "EqualTo", value: el.filterValue, valueRef: el.filterValueRef });
         for (const f of (el.filters ?? [])) allFilters.push(f);
         const filtersXml = allFilters.map(f => {
+          const nullOp = nullOperatorXml(f.operator, f.value);
           let valXml: string;
-          if (f.valueRef) {
+          if (nullOp) {
+            valXml = `<booleanValue>${nullOp.booleanValue}</booleanValue>`;
+          } else if (f.valueRef) {
             valXml = `<elementReference>${x(f.valueRef)}</elementReference>`;
           } else if (f.value === "true" || f.value === "false") {
             valXml = `<booleanValue>${f.value}</booleanValue>`;
@@ -1153,7 +1170,7 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
           return `
     <filters>
       <field>${x(f.field)}</field>
-      <operator>${x(f.operator)}</operator>
+      <operator>${x(nullOp ? nullOp.operator : f.operator)}</operator>
       <value>${valXml}</value>
     </filters>`;
         }).join("");
@@ -1219,12 +1236,17 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
       <field>${x(a.field)}</field>
       <value>${a.valueRef ? `<elementReference>${x(a.valueRef)}</elementReference>` : upTypedVal(a.value)}</value>
     </inputAssignments>`).join("");
-        const upFilters = (el.filters ?? []).map(f => `
+        const upFilters = (el.filters ?? []).map(f => {
+          const nullOp = nullOperatorXml(f.operator, f.value);
+          return `
     <filters>
       <field>${x(f.field)}</field>
-      <operator>${x(f.operator)}</operator>
-      <value>${f.valueRef ? `<elementReference>${x(f.valueRef)}</elementReference>` : upTypedVal(f.value)}</value>
-    </filters>`).join("");
+      <operator>${x(nullOp ? nullOp.operator : f.operator)}</operator>
+      <value>${nullOp
+        ? `<booleanValue>${nullOp.booleanValue}</booleanValue>`
+        : f.valueRef ? `<elementReference>${x(f.valueRef)}</elementReference>` : upTypedVal(f.value)}</value>
+    </filters>`;
+        }).join("");
         // Either update a record already in a variable, or update everything matching criteria.
         const upTarget = el.inputReference
           ? `<inputReference>${x(el.inputReference)}</inputReference>`

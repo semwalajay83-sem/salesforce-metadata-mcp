@@ -178,6 +178,21 @@ await check('D', 'GetRecords filterValueRef', { label: 'QA D gref', apiName: `QA
   variables: [strVar('ind', { isInput: true }), { name: 'accs', dataType: 'SObject', objectType: 'Account', isInput: false, isOutput: true, isCollection: true }],
   elements: [el({ type: 'GetRecords', name: 'G', label: 'G', objectApiName: 'Account', filterField: 'Industry', filterOperator: 'EqualTo', filterValueRef: 'ind', outputVariable: 'accs', queriedFields: ['Name'] })] });
 
+// Filter-level null operators. The Decision path translates IsNotNull; the filter path in both
+// builders writes <operator> straight through, so this is where the FlowComparisonOperator enum
+// rejection would still be reachable.
+for (const op of ['IsNull', 'IsNotNull']) {
+  await check('D', `GetRecords filter ${op}`, { label: `QA D gf ${op}`, apiName: `QA_DGF_${op}_${TS}`, flowType: 'AutoLaunchedFlow', status: 'Draft',
+    variables: [{ name: 'accs', dataType: 'SObject', objectType: 'Account', isInput: false, isOutput: true, isCollection: true }],
+    elements: [el({ type: 'GetRecords', name: 'G', label: 'G', objectApiName: 'Account', filters: [{ field: 'Industry', operator: op, value: 'true' }], outputVariable: 'accs', queriedFields: ['Name'] })] });
+}
+// IsNull with no explicit value — Salesforce needs a booleanValue here, not an empty stringValue.
+await check('D', 'GetRecords filter IsNull without value', { label: 'QA D gfn', apiName: `QA_DGFN_${TS}`, flowType: 'AutoLaunchedFlow', status: 'Draft',
+  variables: [{ name: 'accs', dataType: 'SObject', objectType: 'Account', isInput: false, isOutput: true, isCollection: true }],
+  elements: [el({ type: 'GetRecords', name: 'G', label: 'G', objectApiName: 'Account', filters: [{ field: 'Industry', operator: 'IsNull' }], outputVariable: 'accs', queriedFields: ['Name'] })] });
+await check('D', 'UpdateRecords filter IsNotNull', { label: 'QA D ufn', apiName: `QA_DUFN_${TS}`, flowType: 'AutoLaunchedFlow', status: 'Draft',
+  elements: [el({ type: 'UpdateRecords', name: 'U', label: 'U', objectApiName: 'Account', filters: [{ field: 'Industry', operator: 'IsNotNull', value: 'true' }], inputAssignments: [{ field: 'Rating', value: 'Warm' }] })] });
+
 // Create / Update / Delete
 await check('D', 'CreateRecords literal + ref', { label: 'QA D cr', apiName: `QA_DCR_${TS}`, flowType: 'AutoLaunchedFlow', status: 'Draft',
   variables: [strVar('nm', { isInput: true })],
@@ -305,7 +320,9 @@ else {
 const g3 = `QA_RT_FILT_${TS}`;
 const g3c = await createFlow(auth, { label: 'QA RT Filt', apiName: g3, flowType: 'RecordTriggeredFlow', status: 'Active',
   triggerObject: 'Account', triggerType: 'RecordBeforeSave', recordTriggerType: 'Create',
-  triggerFilterFormula: "{!$Record.Industry} = 'Banking'",
+  // Industry is a picklist — Salesforce rejects a bare `=` comparison in entry criteria and
+  // requires ISPICKVAL. That is a formula-authoring rule, not something the tool should rewrite.
+  triggerFilterFormula: "ISPICKVAL({!$Record.Industry}, 'Banking')",
   elements: [el({ type: 'Assignment', name: 'A', label: 'A', assignments: [{ assignToRef: '$Record.Rating', operator: 'Assign', value: 'Hot' }] })] });
 if (!g3c.success) record('G', 'trigger filter suppresses non-match', 'runtime', false, 'deploy: ' + g3c.message);
 else {
