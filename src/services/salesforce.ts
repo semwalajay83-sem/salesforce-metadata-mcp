@@ -582,7 +582,7 @@ function buildFlowXml(params: {
   constants?: Array<{ name: string; dataType: string; value: string }>;
   textTemplates?: Array<{ name: string; text: string; isViewedAsPlainText?: boolean }>;
   variables?: Array<{ name: string; dataType: string; objectType?: string; isInput: boolean; isOutput: boolean; isCollection: boolean; defaultStringValue?: string }>;
-  fieldUpdates?: Array<{ field: string; value?: string; formula?: string }>;
+  fieldUpdates?: Array<{ field: string; value?: string; formula?: string; formulaDataType?: string }>;
   elements?: Array<{
     type: string; name: string; label: string;
     conditions?: Array<{ leftValueRef: string; operator: string; rightValue?: string; rightValueRef?: string; label?: string; nextElement?: string }>;
@@ -635,8 +635,12 @@ function buildFlowXml(params: {
             const ruleLabel = c.label ?? c.rightValue ?? `Rule_${i + 1}`;
             const ruleConnector = c.nextElement
               ? `<met:connector><met:targetReference>${x(c.nextElement)}</met:targetReference></met:connector>` : "";
+            // FlowComparisonOperator has no IsNotNull member — "is not null" is expressed as
+            // IsNull compared against false. Translate rather than reject, since IsNotNull is the
+            // natural thing for a caller to write and the intent is unambiguous.
+            const isNotNull = c.operator === "IsNotNull";
             const rightValueXml = isNullOps.has(c.operator)
-              ? `<met:booleanValue>${c.rightValue === "false" ? "false" : "true"}</met:booleanValue>`
+              ? `<met:booleanValue>${isNotNull ? (c.rightValue === "false" ? "true" : "false") : (c.rightValue === "false" ? "false" : "true")}</met:booleanValue>`
               : c.rightValueRef
                 ? `<met:elementReference>${x(c.rightValueRef)}</met:elementReference>`
                 : soapTypedRv(c.rightValue);
@@ -647,7 +651,7 @@ function buildFlowXml(params: {
               <met:conditionLogic>and</met:conditionLogic>
               <met:conditions>
                 <met:leftValueReference>${x(c.leftValueRef)}</met:leftValueReference>
-                <met:operator>${x(c.operator)}</met:operator>
+                <met:operator>${x(isNotNull ? "IsNull" : c.operator)}</met:operator>
                 <met:rightValue>${rightValueXml}</met:rightValue>
               </met:conditions>
               ${ruleConnector}
@@ -938,23 +942,34 @@ function buildFlowXml(params: {
       </met:inputParameters>
     </met:actionCalls>` : "";
 
+  // A fieldUpdate carrying a formula can't inline it — FlowElementReferenceOrValue has no <formula>
+  // child. The formula has to become a real formula resource that the assignment references.
+  const fieldUpdateFormulas: Array<{ name: string; dataType: string; expression: string; scale?: number }> =
+    (params.fieldUpdates ?? [])
+    .filter(fu => fu.formula)
+    .map(fu => ({
+      name: `FU_${fu.field.replace(/[^A-Za-z0-9_]/g, "_")}_Formula`,
+      dataType: fu.formulaDataType ?? "String",
+      expression: fu.formula!,
+    }));
+
   const recordUpdateElement = hasFieldUpdates ? `
     <met:recordUpdates>
       <met:name>Update_Record</met:name>
       <met:label>Update Record</met:label>
       <met:locationX>50</met:locationX><met:locationY>300</met:locationY>
-      <met:inputReference>{!$Record}</met:inputReference>
+      <met:inputReference>$Record</met:inputReference>
       ${(params.fieldUpdates ?? []).map(fu => `
         <met:inputAssignments>
           <met:field>${x(fu.field)}</met:field>
           <met:value>${fu.formula
-            ? `<met:formula>${x(fu.formula)}</met:formula>`
+            ? `<met:elementReference>FU_${x(fu.field.replace(/[^A-Za-z0-9_]/g, "_"))}_Formula</met:elementReference>`
             : `<met:stringValue>${x(fu.value ?? "")}</met:stringValue>`}
           </met:value>
         </met:inputAssignments>`).join("\n")}
     </met:recordUpdates>` : "";
 
-  const soapFormulas = (params.formulas ?? []).map(f => `
+  const soapFormulas = [...(params.formulas ?? []), ...fieldUpdateFormulas].map(f => `
     <met:formulas>
       <met:name>${x(f.name)}</met:name>
       <met:dataType>${x(f.dataType)}</met:dataType>
@@ -1072,8 +1087,11 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
           return `<stringValue>${x(v ?? "")}</stringValue>`;
         };
         const rules = (el.conditions ?? []).map((c, i) => {
+          // See the SOAP builder: FlowComparisonOperator has no IsNotNull, so it becomes
+          // IsNull compared against the inverted boolean.
+          const isNotNull = c.operator === "IsNotNull";
           const rv = isNullOps.has(c.operator)
-            ? `<booleanValue>${c.rightValue === "false" ? "false" : "true"}</booleanValue>`
+            ? `<booleanValue>${isNotNull ? (c.rightValue === "false" ? "true" : "false") : (c.rightValue === "false" ? "false" : "true")}</booleanValue>`
             : c.rightValueRef ? `<elementReference>${x(c.rightValueRef)}</elementReference>` : typedRv(c.rightValue);
           const rc = c.nextElement ? `<connector><targetReference>${x(c.nextElement)}</targetReference></connector>` : "";
           return `
@@ -1318,17 +1336,25 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
       <value><booleanValue>false</booleanValue></value>
     </inputParameters>
   </actionCalls>` : "";
+  const zipFieldUpdateFormulas: Array<{ name: string; dataType: string; expression: string; scale?: number }> =
+    (params.fieldUpdates ?? [])
+    .filter(fu => fu.formula)
+    .map(fu => ({
+      name: `FU_${fu.field.replace(/[^A-Za-z0-9_]/g, "_")}_Formula`,
+      dataType: fu.formulaDataType ?? "String",
+      expression: fu.formula!,
+    }));
   const recordUpdateXml = hasFieldUpdates ? `
   <recordUpdates>
     <name>Update_Record</name>
     <label>Update Record</label>
     <locationX>50</locationX><locationY>300</locationY>
-    <inputReference>{!$Record}</inputReference>
+    <inputReference>$Record</inputReference>
     ${(params.fieldUpdates ?? []).map(fu => `
     <inputAssignments>
       <field>${x(fu.field)}</field>
       <value>${fu.formula
-        ? `<formula>${x(fu.formula)}</formula>`
+        ? `<elementReference>FU_${x(fu.field.replace(/[^A-Za-z0-9_]/g, "_"))}_Formula</elementReference>`
         : `<stringValue>${x(fu.value ?? "")}</stringValue>`}
       </value>
     </inputAssignments>`).join("\n")}
@@ -1376,7 +1402,7 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
     <dataType>${x(c.dataType)}</dataType>
     <value>${typedResourceValue(c.dataType, c.value, "")}</value>
   </constants>`).join("")}
-  ${(params.formulas ?? []).map(f => `
+  ${[...(params.formulas ?? []), ...zipFieldUpdateFormulas].map(f => `
   <formulas>
     <name>${x(f.name)}</name>
     <dataType>${x(f.dataType)}</dataType>

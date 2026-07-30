@@ -305,7 +305,8 @@ export const CreateFlowSchema = z.object({
   fieldUpdates: z.array(z.object({
     field: z.string().describe("Field API name, e.g. 'CloseDate'"),
     value: z.string().optional().describe("Literal string value to set"),
-    formula: z.string().optional().describe("Formula for the value, e.g. 'TODAY()'"),
+    formula: z.string().optional().describe("Formula for the value, e.g. 'TODAY()'. Emitted as a Flow formula resource the assignment references — Salesforce does not allow a formula inline in an inputAssignment."),
+    formulaDataType: z.string().optional().describe("Return type of the formula: String (default), Boolean, Currency, Date, DateTime, Number. Must match the target field's type or the deploy fails."),
   })).optional().describe("Simple field updates on the triggering record (for RecordTriggeredFlow)"),
   elements: z.array(FlowElementSchema).optional()
     .describe("Advanced flow elements: Decision, GetRecords, CreateRecords, UpdateRecords, DeleteRecords, SendEmailAlert, ApexAction, Subflow, Loop, Assignment, Screen. (Wait and PlatformEvent are not supported — they produced invalid XML and were removed.)"),
