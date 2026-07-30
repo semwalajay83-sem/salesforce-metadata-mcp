@@ -59,6 +59,17 @@ Before publishing (only when user asks):
 - `<agentType>` valid value: `EinsteinServiceAgent` — verified from real org retrieve 2026-06-17. EinsteinCopilot and Default are both invalid.
 - `<type>` valid value: `InternalCopilot` — verified from real org retrieve 2026-06-17. EinsteinCopilot is invalid.
 
+## Flow testing — two builders, test both
+`sf_create_flow` builds XML with `buildFlowXml` (SOAP/upsertMetadata). `sf_create_flow_from_xml`
+and the older suites use `buildFlowDeployXml` (ZIP/deploy). They are two independent ~300-line
+generators. **A fix applied to one is not applied to the other** — this has now bitten the project
+three times, most recently with `IsNotNull` (v2.8.3). `qa-flow-comprehensive.mjs` runs every case
+through both and asserts runtime behavior; run it, not just `qa-flow-test.mjs`, after any flow change:
+
+  SF_ALIAS=demo-org SF_INSTANCE_URL=<org-url> node qa-flow-comprehensive.mjs
+
+As of v2.8.3: 142 checks, 0 failures against `demo-org`.
+
 ## Known Bugs Pending Fix
 None currently. The list below was retired 2026-07-30 after none of it reproduced against a live
 org (`demo-org`) via the full 33-scenario `qa-flow-test.mjs` suite — 30/30 real scenarios passed

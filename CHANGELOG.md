@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.8.3] - 2026-07-30
+
+### Fixed — 10 Flow bugs, found by testing the SOAP builder for the first time
+
+v2.8.2 reported "30/30 Flow scenarios passing," and that was true, but it hid a structural gap: `sf_create_flow` builds XML with `buildFlowXml` (SOAP/upsertMetadata) while `sf_create_flow_from_xml` and every existing suite use `buildFlowDeployXml` (ZIP/deploy). These are two independent ~300-line generators, and **no suite had ever exercised the SOAP one**. Neither suite passed `triggerObject`/`triggerType` either — grep returns zero hits — so record-triggered flows, the single most common thing an admin builds, were never tested at all.
+
+Wrote `qa-flow-comprehensive.mjs` to close both gaps: 46 flow definitions run through **both** builders, plus runtime verification that creates real records and asserts the flow actually fired. 142 checks. Bugs it found:
+
+- **`flowType` was written straight into `<processType>`, so every record-triggered and scheduled flow failed to deploy** — `FlowProcessType` has no `RecordTriggeredFlow` or `ScheduledFlow` member; both are `AutoLaunchedFlow` at the process level, distinguished only by the `<start>` element's `triggerType`. Added `toProcessType()` in both builders.
+- **Scheduled flows had no schedule at all** — the start element only handled record triggers, so a `ScheduledFlow` deployed as a plain autolaunched flow that never ran. Added `<schedule>` with new `scheduleFrequency`/`scheduleStartDate`/`scheduleStartTime` params.
+- **`recordTriggerType` was hardcoded to `CreateAndUpdate`** — create-only and update-only triggers were unreachable. Now a parameter, and omitted entirely for `RecordBeforeDelete`, which Salesforce rejects it on.
+- **No Update Records element existed** — Get/Create/Delete were present but not Update, so the most common admin pattern ("when the Opportunity closes, update its Account") could not be built. Added in both addressing modes, with a guardrail on the `inputReference` + `inputAssignments` combination Salesforce forbids.
+- **No Formula, Constant, or Text Template resources existed.** Added to both builders; constants emit type-correct value tags instead of coercing everything to `stringValue`.
+- **`IsNotNull` was rejected by Salesforce everywhere it appeared** — `FlowComparisonOperator` has no such member ("is not null" is `IsNull` compared against `false`), yet the schema advertises it. Now translated in all six sites that accept an operator. The first fix attempt landed in the SOAP builder only and inverted the boolean without changing the operator name in the ZIP builder; the new suite caught that on its first run, and the filter paths in *both* builders turned out to have the same untranslated operator. All six now share one `nullOperatorXml()` helper so this cannot land one-sided again.
+- **Null checks in `GetRecords`/`UpdateRecords` filters emitted an empty `<stringValue>`** where Salesforce requires a `booleanValue`.
+- **`recordUpdates` emitted `<inputReference>{!$Record}</inputReference>`** — merge syntax belongs in formula and text contexts only; an `inputReference` takes the bare element name, so this resolved to nothing.
+- **A `fieldUpdates` formula was inlined as `<formula>` inside `<inputAssignments><value>`**, but `FlowElementReferenceOrValue` has no `formula` child. It is now hoisted into a real `<formulas>` resource the assignment references by name. New `fieldUpdates.formulaDataType` controls its return type — previously formulas were always `String`, and the field was read by the service but missing from the strict zod schema, so no caller could set it.
+- **Latent ordering bug:** the approval-submit `actionCall` and the `fieldUpdates` `recordUpdate` were emitted outside the type-grouping logic, so combining `submitForApprovalProcessName` with an `ApexAction` or `SendEmailAlert` produced non-contiguous `<actionCalls>`, which MDAPI rejects. Both are now merged into their type groups.
+- The `elements` description still advertised `Wait` and `PlatformEvent`, which v2.5.x removed from the enum — an LLM reading it would emit elements zod rejects.
+
+**Final run: 142 passed, 0 failed** against `demo-org` — 10 flow types/structures, 20 record-trigger configurations, 22 variable/resource cases, 68 element cases, 12 connector and guardrail cases, 5 lifecycle (activate/versions/deactivate), and 5 runtime assertions proving before-save stamping, after-save related-record creation, entry-criteria suppression, Loop iteration, and Update Records all actually execute in the org.
+
+One suite failure was a test bug, not a product defect, and is recorded as such: the entry-criteria check compared the `Industry` picklist with a bare `=`, which Salesforce rejects in favour of `ISPICKVAL`. The tool passed the caller's formula through verbatim and surfaced Salesforce's real reason — correct behavior, so the test was fixed rather than the code.
+
+`server.json`'s description still claimed 219 tools; corrected to 221.
+
 ## [2.8.2] - 2026-07-30
 
 ### Fixed — 5 more real bugs found by full regression testing across all 221 tools
