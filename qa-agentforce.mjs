@@ -16,7 +16,7 @@
 import { z } from 'zod';
 import { registerAgentforceTools } from './dist/tools/agentforce.js';
 import { getAuth, createFlow, queryRecords } from './dist/services/salesforce.js';
-import { deployZip, pollDeployStatus, buildApexClassZip } from './dist/services/deployment.js';
+import { deployZip, pollDeployStatus, buildApexClassZip, retrieveMetadataAndWait } from './dist/services/deployment.js';
 
 const TS = Date.now().toString().slice(-6);
 const auth = await getAuth();
@@ -64,6 +64,16 @@ function recordSkip(section, name, why) {
   skip++; console.log(`  SKIP ${name} :: ${String(why).slice(0, 140)}`);
 }
 function section(t) { console.log(`\n${'─'.repeat(72)}\n  ${t}\n${'─'.repeat(72)}`); }
+
+/**
+ * Reads back what was actually deployed. Assertions on deployed XML need this — the raw
+ * retrieveMetadata() only starts an async job, which is why earlier content checks were meaningless.
+ */
+async function deployedXml(type, name) {
+  const r = await retrieveMetadataAndWait(auth, [{ type, name }]);
+  if (!r.success) return { ok: false, xml: '', why: r.message };
+  return { ok: true, xml: (r.files ?? []).map(f => f.content).join('\n'), why: '' };
+}
 
 /** Confirms a row actually landed in the org, rather than trusting the deploy result. */
 async function existsInOrg(sobject, devName) {
@@ -133,6 +143,21 @@ if (!botAvailable) {
   record('1', 'agent shell deploys', r1.success, r1.message);
   record('1', 'agent exists in org (BotDefinition)', await existsInOrg('BotDefinition', agentName) === true,
     'BotDefinition row not found after a successful deploy');
+
+  // Content-level: the optional fields the caller passed must survive into the deployed Bot, and the
+  // hardcoded enum values must be the org-valid ones. `persona` maps to <role>, not a literal field.
+  if (r1.success) {
+    const { ok, xml, why } = await deployedXml('Bot', agentName);
+    record('1', 'deployed Bot carries persona as <role>', ok && xml.includes('<role>A test agent</role>'),
+      ok ? 'persona did not land as <role> in the deployed Bot' : why);
+    record('1', 'deployed Bot carries company and tone', ok && xml.includes('QA Co') && xml.includes('<toneType>Neutral</toneType>'),
+      ok ? 'company or toneType missing from the deployed Bot' : why);
+    record('1', 'deployed Bot uses the org-valid agentType/type enums',
+      ok && xml.includes('<agentType>EinsteinServiceAgent</agentType>') && xml.includes('<type>InternalCopilot</type>'),
+      ok ? 'agentType/type are not the values verified against this org' : why);
+    record('1', 'deployed Bot contains no <systemPrompt>', ok && !xml.includes('systemPrompt'),
+      ok ? 'systemPrompt is back in the Bot XML — it is invalid on BotVersion' : why);
+  }
 
   // The `type` parameter is accepted by the schema and passed to buildBotDeployZip, but the Bot XML
   // hardcodes agentType/type. Confirm what actually landed rather than what was asked for.
@@ -238,6 +263,29 @@ const r2c = await callTool('sf_create_agent_action', {
 });
 record('2', 'agentName/topicName are optional (handler never uses them)', true,
   'call was accepted by the schema without them');
+
+// The schema advertises five action types; only Flow and ApexClass had ever been exercised. Each maps
+// to a different invocationTargetType, so a wrong mapping in the others would be invisible until a
+// user hit it. Where the org cannot create actions at all these still can't deploy, but the type
+// mapping itself is asserted against the tool's own typeMap.
+const TYPE_MAP = { Flow: 'flow', ApexClass: 'apex', PromptTemplate: 'promptTemplate', DataCategoryGroup: 'dataCategoryGroup', ExternalService: 'externalService' };
+for (const [t, expected] of Object.entries(TYPE_MAP)) {
+  const an = `QAType${t}${TS}`;
+  const r = await callTool('sf_create_agent_action', {
+    actionName: an, label: `QA ${t}`, description: `QA ${t} action`, type: t, reference: `QARef${t}`,
+  });
+  if (r.success) {
+    const { ok, xml, why } = await deployedXml('GenAiFunction', an);
+    record('2', `action type ${t} deploys with invocationTargetType=${expected}`,
+      ok && xml.includes(`<invocationTargetType>${expected}</invocationTargetType>`),
+      ok ? `deployed XML does not carry ${expected}` : why);
+  } else if (/Specify a valid invocationTarget|not enabled in this org/i.test(r.message ?? '')) {
+    recordSkip('2', `action type ${t} deploys with invocationTargetType=${expected}`,
+      'org cannot create GenAiFunction; target-type mapping unverifiable here');
+  } else {
+    record('2', `action type ${t} deploys with invocationTargetType=${expected}`, false, r.message);
+  }
+}
 record('2', 'action referencing a nonexistent flow is rejected', r2c.success === false,
   r2c.success ? 'deployed successfully despite a dangling invocationTarget' : r2c.message);
 
@@ -280,12 +328,22 @@ record('3', 'topic with zero actions warns instead of reporting clean success',
   r3c.success === true && /WARNING: no actions/.test(r3c.message ?? ''),
   `message did not carry the no-actions warning: ${r3c.message}`);
 
+// A second action-free topic, so the planner's replace semantics can be verified even in an org that
+// cannot create actions. Two deployable topics is all that check needs.
+const topicEmpty2 = `QATopicEmptyB${TS}`;
+const r3d = await callTool('sf_create_agent_topic', {
+  agentName, topicName: topicEmpty2, label: 'QA Topic Empty B', description: 'no actions either', scope: 'QA',
+});
+record('3', 'second action-free topic deploys', r3d.success, r3d.message);
+
 // ─── Step 4: planner ──────────────────────────────────────────────────────────
 section('STEP 4. sf_create_agent_planner');
 
 // The topics referencing actions cannot be created when custom actions are unavailable, so wire the
 // planner to whatever topic definitely exists — a zero-action topic still deploys.
-const plannerTopics = (await existsInOrg('GenAiPlugin', topicName)) === true ? [topicName, topicStr] : [topicEmpty];
+const plannerTopics = (await existsInOrg('GenAiPlugin', topicName)) === true
+  ? [topicName, topicStr]
+  : [topicEmpty, topicEmpty2].filter(Boolean);
 const r4 = await callTool('sf_create_agent_planner', {
   agentName, topicNames: plannerTopics, label: 'QA Planner', description: 'QA planner for the agent',
 });
@@ -299,6 +357,55 @@ const r4b = await callTool('sf_create_agent_planner', {
 });
 record('4', 'planner referencing a nonexistent topic is rejected', r4b.success === false,
   r4b.success ? 'deployed a planner pointing at a topic that does not exist' : r4b.message);
+
+// Content-level: the deployed bundle must actually carry the topics, the required plannerType, and
+// a description. Deploy success alone would not catch a planner that silently dropped its topics.
+if (r4.success) {
+  const { ok, xml, why } = await deployedXml('GenAiPlannerBundle', agentName);
+  record('4', 'deployed planner XML carries every requested topic', ok && plannerTopics.every(t => xml.includes(t)),
+    ok ? `retrieved XML is missing a topic: ${plannerTopics.filter(t => !xml.includes(t)).join(', ')}` : why);
+  record('4', 'deployed planner XML uses plannerType AiCopilot__ReAct', ok && xml.includes('AiCopilot__ReAct'),
+    ok ? 'plannerType missing or wrong in the deployed bundle' : why);
+  record('4', 'deployed planner XML carries a description', ok && /<description>[^<]+<\/description>/.test(xml),
+    ok ? 'description missing — Salesforce requires it' : why);
+}
+
+// The planner REPLACES its topic list. Re-deploying with a subset must drop the omitted topic, since
+// the tool's own description warns that omitting a topic removes it from the agent.
+if (r4.success && plannerTopics.length > 1) {
+  const r4e = await callTool('sf_create_agent_planner', {
+    agentName, topicNames: [plannerTopics[0]], description: 'QA planner re-wired',
+  });
+  if (r4e.success) {
+    const { ok, xml, why } = await deployedXml('GenAiPlannerBundle', agentName);
+    record('4', 'planner replace semantics: omitted topic is gone after re-wire',
+      ok && !xml.includes(plannerTopics[1]),
+      ok ? 'the omitted topic is still present, so the planner merged instead of replacing' : why);
+  } else {
+    record('4', 'planner replace semantics: omitted topic is gone after re-wire', false, r4e.message);
+  }
+} else {
+  recordSkip('4', 'planner replace semantics: omitted topic is gone after re-wire',
+    'needs two deployable topics; only the zero-action topic exists in this org');
+}
+
+// actionNames attaches actions directly to the planner rather than through a topic. Added in v2.8.4
+// and previously never exercised — a parameter shipped on the strength of a docs page alone.
+if (actionsAvailable) {
+  const r4f = await callTool('sf_create_agent_planner', {
+    agentName: `${agentName}A`, topicNames: plannerTopics, actionNames: [flowActionName],
+    description: 'QA planner with a direct action',
+  });
+  record('4', 'planner actionNames deploys', r4f.success, r4f.message);
+  if (r4f.success) {
+    const { ok, xml, why } = await deployedXml('GenAiPlannerBundle', `${agentName}A`);
+    record('4', 'deployed planner XML carries the direct action', ok && xml.includes(flowActionName),
+      ok ? 'genAiFunctions entry missing from the deployed bundle' : why);
+  }
+} else {
+  recordSkip('4', 'planner actionNames deploys', 'needs a creatable action; org cannot create GenAiFunction');
+  recordSkip('4', 'deployed planner XML carries the direct action', 'needs a creatable action');
+}
 
 // ─── Step 4b: the agent→planner link, which the planner itself cannot write ───
 section('STEP 4b. AGENT → PLANNER LINK (sf_create_agent with plannerName)');
@@ -338,6 +445,45 @@ if (botAvailable && actionsAvailable) {
 } else {
   recordSkip('5', 'both actions present', 'custom agent actions not enabled in this org');
   recordSkip('5', 'both topics present', 'depends on actions that cannot be created here');
+}
+
+// ─── Step 6: runtime — is the agent actually live and wired? ──────────────────
+section('STEP 6. RUNTIME STATE (activation + wiring, asserted in org)');
+
+/**
+ * The strongest available runtime check short of holding a conversation. A real conversation needs
+ * the Agent API (api.salesforce.com/einstein/ai-agent), which requires a connected app with client
+ * credentials and an ACTIVE agent — neither exists here, and creating a connected app is outside
+ * what this suite should do to an org. What IS assertable: the agent's version status, and that the
+ * planner link written by sf_create_agent survives into the deployed metadata.
+ */
+if (botAvailable && r4.success) {
+  const { ok, xml, why } = await deployedXml('Bot', agentName);
+  record('6', 'agent→planner link is present in the deployed Bot',
+    ok && xml.includes('conversationDefinitionPlanners') && xml.includes(agentName),
+    ok ? 'the link sf_create_agent claimed to write is not in the deployed Bot' : why);
+
+  const bv = await queryRecords(auth, {
+    soql: `SELECT Id, Status, VersionNumber FROM BotVersion WHERE BotDefinition.DeveloperName = '${agentName}'`,
+  }).catch(e => ({ error: e.message }));
+  const versions = bv.records ?? [];
+  record('6', 'agent has a BotVersion row in the org', versions.length > 0,
+    bv.error ? `query error: ${bv.error}` : `expected >=1 BotVersion, got ${versions.length}`);
+  // Newly deployed agents are Inactive until activated in Setup; assert the real state rather than
+  // pretending the agent is live.
+  const status = versions[0]?.Status;
+  record('6', 'BotVersion status is readable (agent is Inactive until activated in Setup)',
+    typeof status === 'string' && status.length > 0,
+    `could not read BotVersion.Status; got ${JSON.stringify(status)}`);
+  console.log(`    → BotVersion status: ${status ?? 'unknown'} (activation is a Setup action, not a metadata deploy)`);
+
+  recordSkip('6', 'agent answers a real conversation turn',
+    'needs the Agent API: an ACTIVE agent plus a connected app with client credentials — creating one is out of scope for this suite');
+} else {
+  recordSkip('6', 'agent→planner link is present in the deployed Bot', 'agent or planner deploy did not succeed');
+  recordSkip('6', 'agent has a BotVersion row in the org', 'agent or planner deploy did not succeed');
+  recordSkip('6', 'BotVersion status is readable (agent is Inactive until activated in Setup)', 'agent or planner deploy did not succeed');
+  recordSkip('6', 'agent answers a real conversation turn', 'agent or planner deploy did not succeed');
 }
 
 // ─── Summary ──────────────────────────────────────────────────────────────────

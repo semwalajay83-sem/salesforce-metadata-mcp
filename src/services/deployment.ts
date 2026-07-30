@@ -265,6 +265,72 @@ export async function checkDeployStatus(
 
 // ─── Retrieve metadata ────────────────────────────────────────────────────────
 
+/**
+ * Polls a retrieve job and returns the unpacked files.
+ *
+ * `retrieveMetadata` only starts the job and hands back an async id, and nothing in this package
+ * called checkRetrieveStatus — so sf_retrieve_metadata could never actually deliver metadata to a
+ * caller, despite its description telling them the zip was "available via checkRetrieveStatus".
+ */
+export async function pollRetrieveStatus(
+  auth: SalesforceAuth,
+  asyncProcessId: string,
+  timeoutMs = 5 * 60 * 1000,
+  maxBytesPerFile = 200_000
+): Promise<ToolResult & { files?: Array<{ path: string; content: string }> }> {
+  const started = Date.now();
+  let delay = 2000;
+  for (;;) {
+    if (Date.now() - started > timeoutMs) {
+      return { success: false, message: `Retrieve ${asyncProcessId} did not finish within ${Math.round(timeoutMs / 1000)}s.` };
+    }
+    const xml = await callMetadataSoap(
+      auth, "checkRetrieveStatus",
+      `<met:checkRetrieveStatus><met:asyncProcessId>${x(asyncProcessId)}</met:asyncProcessId><met:includeZip>true</met:includeZip></met:checkRetrieveStatus>`
+    );
+    if (!/<done>true<\/done>/.test(xml)) {
+      await new Promise(r => setTimeout(r, delay));
+      delay = Math.min(delay * 1.5, 10_000);
+      continue;
+    }
+    const errMatch = xml.match(/<errorMessage>([\s\S]*?)<\/errorMessage>/);
+    if (errMatch) return { success: false, message: `Retrieve failed: ${errMatch[1].trim()}` };
+
+    const zipMatch = xml.match(/<zipFile>([\s\S]*?)<\/zipFile>/);
+    if (!zipMatch) return { success: false, message: "Retrieve completed but returned no zipFile." };
+
+    const zip = await JSZip.loadAsync(Buffer.from(zipMatch[1], "base64"));
+    const files: Array<{ path: string; content: string }> = [];
+    for (const path of Object.keys(zip.files)) {
+      const entry = zip.files[path];
+      if (entry.dir) continue;
+      const content = await entry.async("string");
+      files.push({
+        path,
+        content: content.length > maxBytesPerFile
+          ? `${content.slice(0, maxBytesPerFile)}\n... [truncated at ${maxBytesPerFile} bytes]`
+          : content,
+      });
+    }
+    return {
+      success: true, fullName: asyncProcessId, created: false,
+      message: `Retrieved ${files.length} file(s).`,
+      files,
+    };
+  }
+}
+
+/** Starts a retrieve and waits for the files, which is what a caller almost always wants. */
+export async function retrieveMetadataAndWait(
+  auth: SalesforceAuth,
+  components: Array<{ type: string; name: string }>,
+  timeoutMs = 5 * 60 * 1000
+): Promise<ToolResult & { files?: Array<{ path: string; content: string }> }> {
+  const started = await retrieveMetadata(auth, components);
+  if (!started.success || !started.fullName) return started;
+  return pollRetrieveStatus(auth, started.fullName, timeoutMs);
+}
+
 export async function retrieveMetadata(
   auth: SalesforceAuth,
   components: Array<{ type: string; name: string }>

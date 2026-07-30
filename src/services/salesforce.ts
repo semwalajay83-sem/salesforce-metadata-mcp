@@ -4995,19 +4995,33 @@ export async function sendEmail(auth: SalesforceAuth, params: Record<string, any
 }
 export async function createEinsteinPrediction(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
+        // Verified against a live org 2026-07-30. This XML previously could not deploy at all:
+        //   * <label> is invalid on MLPredictionDefinition — the field is <masterLabel>.
+        //   * <predictionType> is not an element of this type either.
+        //   * <aiApplicationDeveloperName> is REQUIRED and points at an AIApplication that must
+        //     already exist; without it Salesforce answers "Required field is missing".
+        //   * `targetField` was a required schema parameter that the XML never used; it is the field
+        //     being predicted, and belongs in <predictionField>.
+        // Field set verified element-by-element against a live org 2026-07-30. The previous XML could
+        // not deploy under any input. Corrections, in the order Salesforce rejected them:
+        //   <label>          -> <masterLabel>
+        //   <predictionType> -> <type>, whose AIPredictionType enum accepts only BinaryClassification
+        //                       and Regression (Classification and Numeric are rejected)
+        //   <developerName>  and <aiApplicationDeveloperName> are both REQUIRED
+        //   <predictionField> is a simple string (the field API name), not a fieldName/objectName pair
+        //   <positiveLabel>/<negativeLabel>/<active> are not elements of this type at all
+        // The remaining failure mode is legitimate: a dangling aiApplicationDeveloperName returns
+        // "Could not find the Application Id for App Name ...".
+        const predType = params.predictionType === "Classification" ? "BinaryClassification" : params.predictionType;
         const xml = `<met:metadata xsi:type="met:MLPredictionDefinition" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.predictionName)}</met:fullName>
-    <met:label>${x(params.label)}</met:label>
-    <met:active>false</met:active>
-    <met:negativeLabel>${x(params.negativeLabel ?? "No")}</met:negativeLabel>
-    <met:positiveLabel>${x(params.positiveLabel ?? "Yes")}</met:positiveLabel>
-    <met:predictionType>${x(params.predictionType)}</met:predictionType>
+    <met:developerName>${x(params.predictionName)}</met:developerName>
+    <met:masterLabel>${x(params.label)}</met:masterLabel>
+    <met:aiApplicationDeveloperName>${x(params.aiApplicationDeveloperName)}</met:aiApplicationDeveloperName>
     <met:status>Draft</met:status>
+    <met:type>${x(predType)}</met:type>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
-    ${params.pushbackField ? `<met:pushbackField>
-        <met:fieldName>${x(params.pushbackField)}</met:fieldName>
-        <met:objectName>${x(params.objectApiName)}</met:objectName>
-    </met:pushbackField>` : ""}
+    ${params.targetField ? `<met:predictionField>${x(params.targetField)}</met:predictionField>` : ""}
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
@@ -5044,38 +5058,56 @@ export async function createEinsteinBot(auth: SalesforceAuth, params: Record<str
         <met:label>${x(d.label)}</met:label>
         ${(d.utterances ?? []).map((u: any) => `<met:mlIntentUtterances><met:utterance>${x(u)}</met:utterance></met:mlIntentUtterances>`).join("")}
     </met:mlIntents>`).join("");
+        // BotStep uses <type>, not <conversationStepType>, and its text lives in
+        // <botMessages><message>, not a flat <botMessage>. Element order follows the XSD sequence.
         const dialogsXml = (params.dialogs ?? [{ name: "Welcome", label: "Welcome", type: "Main", isGoalStep: false, messages: ["Hello! How can I help you today?"] }]).map((d: any) => `
     <met:botDialogs>
         ${(d.messages ?? ["Hello!"]).map((msg: any, i: any) => `
         <met:botSteps>
-            <met:conversationStepType>Message</met:conversationStepType>
-            <met:botMessage>${x(msg)}</met:botMessage>
+            <met:botMessages>
+                <met:message>${x(msg)}</met:message>
+                <met:messageIdentifier>${x(d.name)}_msg${i + 1}</met:messageIdentifier>
+            </met:botMessages>
             <met:stepIdentifier>${x(d.name)}_step${i + 1}</met:stepIdentifier>
+            <met:type>Message</met:type>
         </met:botSteps>`).join("")}
+        <met:botSteps>
+            <met:stepIdentifier>${x(d.name)}_end</met:stepIdentifier>
+            <met:type>Wait</met:type>
+        </met:botSteps>
         <met:developerName>${x(d.name)}</met:developerName>
-        <met:isGoalStep>${d.isGoalStep ? "true" : "false"}</met:isGoalStep>
+        <met:isPlaceholderDialog>false</met:isPlaceholderDialog>
         <met:label>${x(d.label)}</met:label>
         <met:showInFooterMenu>false</met:showInFooterMenu>
     </met:botDialogs>`).join("");
+        // Verified against a live org 2026-07-30. Three things this used to get wrong:
+        //   * <defaultLocale> is not a Bot field — "Element defaultLocale invalid at this location".
+        //   * The ML domain element is <botMlDomain>, not <mlDomain>, and takes <name>, not
+        //     <developerName>.
+        //   * The Bot and its BotVersion cannot be upserted separately: a Bot on its own is rejected
+        //     with "Bot needs at least one Bot version", so the version must be embedded as
+        //     <botVersions> in the same payload. The old two-call sequence could never succeed.
+        const entryDialog = (params.dialogs ?? [])[0]?.name ?? "Welcome";
         const botXml = `<met:metadata xsi:type="met:Bot" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.botName)}</met:fullName>
     <met:label>${x(params.label)}</met:label>
-    <met:defaultLocale>${x(params.defaultLocale ?? "en_US")}</met:defaultLocale>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
-    <met:mlDomain>
-        <met:developerName>${x(params.botName)}_MLDomain</met:developerName>
+    <met:botMlDomain>
+        <met:name>${x(params.botName)}</met:name>
         <met:label>${x(params.label)} ML Domain</met:label>
         ${mlIntentsXml}
-    </met:mlDomain>
+    </met:botMlDomain>
+    <met:botVersions>
+        <met:fullName>v1</met:fullName>
+        ${dialogsXml}
+        <met:entryDialog>${x(entryDialog)}</met:entryDialog>
+    </met:botVersions>
+    <met:logPrivateConversationData>false</met:logPrivateConversationData>
+    <met:richContentEnabled>true</met:richContentEnabled>
+    <met:sessionTimeout>0</met:sessionTimeout>
 </met:metadata>`;
         const botResult = await upsertMetadata(auth, botXml);
-        if (!botResult.success) return botResult;
-        const versionXml = `<met:metadata xsi:type="met:BotVersion" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <met:fullName>${x(params.botName)}.v1</met:fullName>
-    ${dialogsXml}
-</met:metadata>`;
-        const versionResult = await upsertMetadata(auth, versionXml);
-        return { success: versionResult.success, fullName: params.botName, created: true, message: versionResult.success ? `Einstein Bot '${params.botName}' created with ${(params.dialogs ?? []).length || 1} dialog(s).` : versionResult.message };
+        return { success: botResult.success, fullName: params.botName, created: true, message: botResult.success ? `Einstein Bot '${params.botName}' created with ${(params.dialogs ?? []).length || 1} dialog(s). Train it in Setup → Einstein Bots → ${params.botName} → Train, then activate it.` : botResult.message };
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
     }

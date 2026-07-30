@@ -12,7 +12,7 @@ import {
   deployZip,
   pollDeployStatus,
   checkDeployStatus,
-  retrieveMetadata,
+  retrieveMetadataAndWait,
 } from "../services/deployment.js";
 import {
   createOutboundChangeSet,
@@ -115,13 +115,13 @@ export function registerDeploymentTools(server: McpServer): void {
     "sf_retrieve_metadata",
     {
       title: "Retrieve Metadata",
-      description: `Retrieves metadata components from the org by initiating a SOAP retrieve operation. Returns an async job ID. The org will package the requested components — use this to read existing configuration before making changes, back up metadata, or understand the current state of a setup item. Returns the retrieve request ID; the actual zip is available via Metadata API checkRetrieveStatus.`,
+      description: `Retrieves metadata components from the org and returns their actual file contents. Use this to read existing configuration before making changes, to back up metadata, or to check what is really deployed rather than what you think is deployed. Waits for the async retrieve to finish and unpacks the resulting zip, returning each file's path and source. Large files are truncated.`,
       inputSchema: RetrieveMetadataSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     async (params) => {
       const auth = await getAuth();
-      const result = await retrieveMetadata(auth, params.components ?? []);
+      const result = await retrieveMetadataAndWait(auth, params.components ?? []);
       return resultContent(result);
     }
   );

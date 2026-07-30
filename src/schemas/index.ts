@@ -2005,7 +2005,8 @@ export const CreateEinsteinPredictionSchema = z.object({
     (v) => v === 'Classification' ? 'BinaryClassification' : v,
     z.enum(["BinaryClassification","Regression","Classification"])
   ).describe("BinaryClassification/Classification for yes/no, Regression for numeric"),
-  targetField: z.string().min(1).describe("Field API name to predict"),
+  targetField: z.string().min(1).describe("Field API name to predict, e.g. 'IsWon'. Deployed as <predictionField> together with objectApiName."),
+  aiApplicationDeveloperName: z.string().min(1).max(80).describe("REQUIRED by Salesforce. API name of an existing AIApplication that owns this prediction — Einstein Prediction Builder creates one per app. The deploy fails with 'Required field is missing: aiApplicationDeveloperName' without it."),
   positiveLabel: z.string().default("Yes").describe("Label for positive outcome (BinaryClassification only)"),
   negativeLabel: z.string().default("No").describe("Label for negative outcome (BinaryClassification only)"),
   pushbackField: z.string().optional().describe("Field to write the prediction score to, e.g. 'Win_Score__c'"),

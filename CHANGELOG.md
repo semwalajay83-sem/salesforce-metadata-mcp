@@ -1,5 +1,30 @@
 # Changelog
 
+## [2.8.5] - 2026-07-30
+
+### Fixed — 8 more bugs, from widening Agentforce QA past the four headline tools
+
+Asked whether the v2.8.4 Agentforce testing was thorough, the honest answer was no: 4 of 8 agent-related tools, no runtime assertions, no content-level verification, only 2 of 5 action types, and a parameter (`actionNames`) that shipped without ever being exercised. Closing those gaps found eight more real bugs.
+
+**`sf_retrieve_metadata` could never return metadata to anyone.** It started an async retrieve, handed back a job id, and the package contained no tool that calls `checkRetrieveStatus` — while the tool's own description told callers the zip was "available via Metadata API checkRetrieveStatus". Added `pollRetrieveStatus`/`retrieveMetadataAndWait`: the tool now waits for the job, unpacks the zip, and returns each file's path and source. This also unblocked every content-level assertion in the QA suites, which is how several bugs below were confirmed.
+
+**`sf_create_einstein_bot` was non-functional — five separate defects, each hidden behind the previous one:**
+- `<defaultLocale>` is not a `Bot` field ("Element defaultLocale invalid at this location").
+- The ML domain element is `<botMlDomain>` with a `<name>` child, not `<mlDomain>` with `<developerName>`.
+- The Bot and its BotVersion were upserted in two separate calls, but a Bot alone is rejected with "Bot needs at least one Bot version" — the sequence could never succeed. The version is now embedded as `<botVersions>` in the same payload.
+- `BotStep` takes `<type>`, not `<conversationStepType>`, and its text belongs in `<botMessages><message>`, not a flat `<botMessage>`.
+- `<isGoalStep>` is not a `BotDialog` field; it is `isPlaceholderDialog`.
+
+**`sf_create_einstein_prediction` was also non-functional, and its XML is now correct element-by-element:** `<label>` → `<masterLabel>`; `<predictionType>` → `<type>`, whose `AIPredictionType` enum accepts only `BinaryClassification` and `Regression` (`Classification` and `Numeric` are rejected outright, so the schema's friendly `Classification` alias is now mapped before it reaches the XML); `<developerName>` and `<aiApplicationDeveloperName>` are both required, the latter naming an existing AIApplication; `<predictionField>` is a plain string, not a `fieldName`/`objectName` pair; and `<positiveLabel>`, `<negativeLabel>` and `<active>` are not elements of this type at all. `targetField` was a **required** schema parameter the XML never used — it is the predicted field and now populates `<predictionField>`.
+
+**Verification widened, not just repeated:**
+- `qa-agentforce.mjs` grew from 27 to 47 checks: content-level assertions that the deployed Bot really carries `persona` as `<role>`, `company`/`toneType`, the org-valid `agentType`/`type` enums and **no** `systemPrompt`; that the deployed planner carries every requested topic, `AiCopilot__ReAct` and a description; all five action types asserting their own `invocationTargetType` mapping; the previously-untested `actionNames`; planner replace semantics (verified by deploying a second action-free topic, so it no longer depends on actions the org cannot create); and a runtime section asserting the agent→planner link survives into deployed metadata and reading real `BotVersion` status from the org.
+- New `qa-agentforce-adjacent.mjs` covers the four tools nothing had ever driven: `sf_create_einstein_bot`, `sf_create_bot_routing`, `sf_create_einstein_prediction`, `sf_assign_skill_to_agent`. `sf_assign_skill_to_agent` passes fully, including its negative cases.
+
+**Results against `demo-org`:** `qa-agentforce.mjs` 30 passed / 1 failed / 16 skipped (the failure a transient `fetch failed`, not a defect); `qa-agentforce-adjacent.mjs` 6 passed / 0 failed / 5 skipped.
+
+**Honest limits, unchanged and still not papered over.** No conversation test exists: the Agent API needs an ACTIVE agent plus a connected app with client credentials, and creating a connected app is a change to the org this suite should not make unasked — so "agent answers a real conversation turn" is a recorded skip. `demo-org` cannot create GenAiFunction actions, cannot deploy classic Bots ("You don't have access to bots of type Bot" — it licenses Agentforce agents instead), has no Queue for bot routing, and has no AIApplication for predictions. Those are org boundaries, recorded as skips and never as passes. The corrected Einstein Bot and Prediction XML is therefore structurally verified element-by-element against a live org, but neither has completed a successful end-to-end deploy anywhere.
+
 ## [2.8.4] - 2026-07-30
 
 ### Fixed — 6 Agentforce bugs; agent creation was broken end to end
