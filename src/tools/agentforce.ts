@@ -9,12 +9,15 @@ const SF_NS = "http://soap.sforce.com/2006/04/metadata";
 
 async function buildBotDeployZip(params: {
   agentName: string; label: string; description?: string;
-  type?: string; company?: string; tone?: string; role?: string; instructions?: string; apiVersion: string;
+  company?: string; tone?: string; role?: string; plannerName?: string; apiVersion: string;
 }): Promise<string> {
   // MDAPI format: BotVersion is embedded as <botVersions> inside the single .bot file
-  // Ground truth values retrieved from real org (2026-06-17):
+  // Ground truth values retrieved from real org (2026-06-17, re-verified 2026-07-30):
   //   agentType = EinsteinServiceAgent (BotType enum; EinsteinCopilot and Default are both invalid)
   //   type      = InternalCopilot      (GenAiAgentType enum; EinsteinCopilot is invalid)
+  // BotVersion has NO systemPrompt field — deploying one fails with "Element systemPrompt invalid
+  // at this location in type BotVersion". Agent guidance belongs on the topics
+  // (sf_create_agent_topic's `instructions`), not on the Bot. <role> is the valid persona field.
   const botXml = `<?xml version="1.0" encoding="UTF-8"?>
 <Bot xmlns="${SF_NS}">
   <agentType>EinsteinServiceAgent</agentType>
@@ -32,13 +35,13 @@ async function buildBotDeployZip(params: {
     </botDialogs>
     <citationsEnabled>false</citationsEnabled>
     ${params.company ? `<company>${x(params.company)}</company>` : ""}
+    ${params.plannerName ? `<conversationDefinitionPlanners><genAiPlannerName>${x(params.plannerName)}</genAiPlannerName></conversationDefinitionPlanners>` : ""}
     <entryDialog>Welcome</entryDialog>
     <intentDisambiguationEnabled>false</intentDisambiguationEnabled>
     <intentV3Enabled>false</intentV3Enabled>
     <knowledgeActionEnabled>false</knowledgeActionEnabled>
     <knowledgeFallbackEnabled>false</knowledgeFallbackEnabled>
     ${params.role ? `<role>${x(params.role)}</role>` : ""}
-    ${params.instructions ? `<systemPrompt>${x(params.instructions)}</systemPrompt>` : ""}
     <smallTalkEnabled>false</smallTalkEnabled>
     <toneType>${x(params.tone ?? "Neutral")}</toneType>
   </botVersions>
@@ -83,17 +86,19 @@ export function registerAgentforceTools(server: McpServer): void {
           agentName: params.agentName,
           label: params.label ?? params.agentName,
           description: params.description,
-          type: params.type,
           company: params.company,
           tone: params.tone,
           role: params.persona,
-          instructions: params.instructions,
+          plannerName: params.plannerName,
           apiVersion: API_VERSION,
         });
         const deployId = await deployZip(auth, base64Zip, { rollbackOnError: true });
         const result = await pollDeployStatus(auth, deployId, 10 * 60 * 1000);
         if (!result.success) return resultContent({ ...result, message: `Agent deployment failed. Common causes: (1) Agentforce/Einstein Copilot is not enabled in this org — enable it in Setup → Agentforce, (2) agentName contains invalid characters — use letters and numbers only, no underscores, (3) Developer Edition orgs may lack Einstein features. Salesforce error: ${result.message ?? JSON.stringify(result)}` });
-        return resultContent({ success: true, fullName: params.agentName, created: true, message: `Agent shell '${params.agentName}' created (step 1 of 4 complete). THE AGENT IS NOT FUNCTIONAL YET — do not report success to the user. REQUIRED NEXT ACTIONS (call these tools now, in order, without stopping): [2] sf_create_agent_action — one call per flow or Apex action. [3] sf_create_agent_topic — pass ALL action API names in the 'actions' array. [4] sf_create_agent_planner — final wiring step. Only after sf_create_agent_planner succeeds is the agent usable. Proceed immediately.` });
+        if (params.plannerName) {
+          return resultContent({ success: true, fullName: params.agentName, created: true, message: `Agent '${params.agentName}' updated and linked to planner '${params.plannerName}'. The agent→planner wiring is now complete. Activate the agent in Setup → Agentforce to make it live.` });
+        }
+        return resultContent({ success: true, fullName: params.agentName, created: true, message: `Agent shell '${params.agentName}' created (step 1 of 5 complete). THE AGENT IS NOT FUNCTIONAL YET — do not report success to the user. REQUIRED NEXT ACTIONS (call these tools now, in order, without stopping): [2] sf_create_agent_action — one call per flow or Apex action. [3] sf_create_agent_topic — pass ALL action API names in the 'actions' array. [4] sf_create_agent_planner — deploys the planner. [5] sf_create_agent again with agentName='${params.agentName}' and plannerName='${params.agentName}' — writes the agent→planner link, which lives on the Bot and cannot be set by the planner itself. Only after step 5 is the agent usable. Proceed immediately.` });
       } catch (err: unknown) {
         return resultContent({ success: false, message: `Agent creation error: ${err instanceof Error ? err.message : String(err)}. Check that Agentforce is enabled in your org (Setup → Agentforce).` });
       }
@@ -156,22 +161,31 @@ export function registerAgentforceTools(server: McpServer): void {
     async (params) => {
       const auth = await getAuth();
       try {
-        const topicFunctionsXml = params.topicNames.map((t, i) => `
-  <genAiPlannerFunctions>
-    <genAiPlugin>${x(t)}</genAiPlugin>
-    <sortOrder>${i}</sortOrder>
-  </genAiPlannerFunctions>`).join("");
+        // GenAiPlanner no longer exists — Salesforce replaced it with GenAiPlannerBundle and rejects
+        // the old type with "Not available for deploy for this API version". Field set verified
+        // against a live org (2026-07-30): description, masterLabel and plannerType are all required,
+        // AiCopilot__ReAct is the only accepted PlannerType, topics go in <genAiPlugins> as
+        // <genAiPluginName>, and <botName> is invalid here — the agent→planner link lives on the Bot
+        // (BotVersion <conversationDefinitionPlanners>), which sf_create_agent writes via plannerName.
+        const topicFunctionsXml = params.topicNames.map(t => `
+  <genAiPlugins>
+    <genAiPluginName>${x(t)}</genAiPluginName>
+  </genAiPlugins>`).join("");
+        const actionFunctionsXml = (params.actionNames ?? []).map(a => `
+  <genAiFunctions>
+    <genAiFunctionName>${x(a)}</genAiFunctionName>
+  </genAiFunctions>`).join("");
         const plannerXml = `<?xml version="1.0" encoding="UTF-8"?>
-<GenAiPlanner xmlns="${SF_NS}">
-  <botName>${x(params.agentName)}</botName>
-  <developerName>${x(params.agentName)}</developerName>
-  <masterLabel>${x(params.label ?? params.agentName)}</masterLabel>${topicFunctionsXml}
-</GenAiPlanner>`;
-        const base64Zip = await buildGenericDeployZip([], API_VERSION, [{ type: "GenAiPlanner", name: params.agentName, xml: plannerXml }]);
+<GenAiPlannerBundle xmlns="${SF_NS}">
+  <description>${x(params.description ?? `Planner for agent ${params.agentName}`)}</description>
+  <masterLabel>${x(params.label ?? params.agentName)}</masterLabel>
+  <plannerType>AiCopilot__ReAct</plannerType>${topicFunctionsXml}${actionFunctionsXml}
+</GenAiPlannerBundle>`;
+        const base64Zip = await buildGenericDeployZip([], API_VERSION, [{ type: "GenAiPlannerBundle", name: params.agentName, xml: plannerXml }]);
         const deployId = await deployZip(auth, base64Zip, { rollbackOnError: true });
         const result = await pollDeployStatus(auth, deployId, 10 * 60 * 1000);
         if (!result.success) return resultContent({ ...result, message: `Planner deployment failed. Check that: (1) agentName matches an existing Bot/agent in the org, (2) all topicNames exist in the org (created via sf_create_agent_topic). Salesforce error: ${result.message ?? JSON.stringify(result)}` });
-        return resultContent({ success: true, fullName: params.agentName, created: true, message: `Agent '${params.agentName}' is now fully wired — topics connected: ${params.topicNames.join(", ")}. The agent can now route user requests to these topics. Activate the agent in Setup → Agentforce to make it live.` });
+        return resultContent({ success: true, fullName: params.agentName, created: true, message: `Planner '${params.agentName}' deployed with topics: ${params.topicNames.join(", ")}. ONE STEP REMAINS — the agent is not linked to this planner yet: call sf_create_agent again with agentName='${params.agentName}' and plannerName='${params.agentName}' to write the link (that tool is idempotent, so it updates the existing agent rather than creating a second one). After that, activate the agent in Setup → Agentforce to make it live.` });
       } catch (err: unknown) {
         return resultContent({ success: false, message: `Planner creation error: ${err instanceof Error ? err.message : String(err)}` });
       }
@@ -210,7 +224,15 @@ export function registerAgentforceTools(server: McpServer): void {
         const base64Zip = await buildGenericDeployZip([], API_VERSION, [{ type: "GenAiFunction", name: fullName, xml: functionXml }]);
         const deployId = await deployZip(auth, base64Zip, { rollbackOnError: true });
         const result = await pollDeployStatus(auth, deployId, 10 * 60 * 1000);
-        if (!result.success) return resultContent({ ...result, message: `Action deployment failed. Check that: (1) for Flow type — the flow '${params.reference}' exists and is Active (not Draft), (2) for ApexClass type — the class '${params.reference}' exists and has @InvocableMethod annotation, (3) actionName contains only letters/numbers/underscores. Salesforce error: ${result.message ?? JSON.stringify(result)}` });
+        if (!result.success) {
+          // "Specify a valid invocationTarget and invocationTargetType" is also what Salesforce
+          // returns when GenAiFunction creation is not enabled in the org at all — verified on a
+          // live org where every documented target type, including standard invocable actions,
+          // was rejected identically against a confirmed-Active flow and Apex class. Say so, rather
+          // than sending the caller to re-check a flow that is already fine.
+          const targetErr = /Specify a valid invocationTarget/i.test(result.message ?? "");
+          return resultContent({ ...result, message: `Action deployment failed. Check that: (1) for Flow type — the flow '${params.reference}' exists and is Active (not Draft), (2) for ApexClass type — the class '${params.reference}' exists and has @InvocableMethod annotation, (3) actionName contains only letters/numbers/underscores.${targetErr ? ` NOTE: if '${params.reference}' is confirmed to exist and be active, this same error means custom agent actions are not enabled in this org — GenAiFunction appears in the metadata type list but rejects every invocationTargetType. Check your Agentforce/Einstein licensing in Setup rather than the target.` : ""} Salesforce error: ${result.message ?? JSON.stringify(result)}` });
+        }
         return resultContent({ success: true, fullName, created: true, message: `Action '${params.actionName}' created (type=${invTargetType}, reference=${params.reference}). DO NOT STOP — the agent is not wired yet. REQUIRED NEXT: if more actions are needed, call sf_create_agent_action again. Once all actions are created, call sf_create_agent_topic and pass ALL action API names (including '${params.actionName}') in the 'actions' array. Then call sf_create_agent_planner. Proceed immediately without asking the user.` });
       } catch (err: unknown) {
         return resultContent({ success: false, message: `Action creation error: ${err instanceof Error ? err.message : String(err)}` });

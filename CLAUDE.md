@@ -47,10 +47,21 @@ Before publishing (only when user asks):
 
 ## Agentforce Agent Creation — Correct Step Order
 1. Create backing flows (`sf_create_flow`, `flowType=AutoLaunchedFlow`, `status=Active`) and/or Apex classes
-2. `sf_create_agent` — deploys the Bot shell (type=EinsteinCopilot)
+2. `sf_create_agent` — deploys the Bot shell
 3. `sf_create_agent_action` — one call per flow/Apex (deploys GenAiFunction)
 4. `sf_create_agent_topic` — groups actions into a topic (deploys GenAiPlugin); must come AFTER actions
-5. `sf_create_agent_planner` — wires topics to the agent (deploys GenAiPlanner); must come AFTER both Bot and topics
+5. `sf_create_agent_planner` — deploys the **GenAiPlannerBundle** listing the topics; must come AFTER topics
+6. `sf_create_agent` AGAIN with `plannerName` — writes the agent→planner link. The planner cannot write
+   it (`botName` is invalid on the bundle); it lives on the Bot as `<conversationDefinitionPlanners>`.
+   `sf_create_agent` is idempotent, so this updates the existing agent rather than creating a second.
+
+### Verified against a live org 2026-07-30 (v2.8.4)
+- `GenAiPlanner` **no longer exists** — use `GenAiPlannerBundle` at `genAiPlannerBundles/<n>/<n>.genAiPlannerBundle`
+- `plannerType` is required; `AiCopilot__ReAct` is the only accepted value
+- planner also requires `description` and `masterLabel`; topics go in `<genAiPlugins><genAiPluginName>`
+- `BotVersion` has **no** `systemPrompt` field — agent guidance belongs on topic `instructions`
+- run `qa-agentforce.mjs` after any Agentforce change; `test-suite.mjs`'s agent tests cannot fail and
+  test service functions no tool calls
 
 ### Bot XML field placement (MDAPI format)
 - Root `<Bot>` level: `<agentType>`, `<label>`, `<type>`, `<description>`, `<botMlDomain>`, `<logPrivateConversationData>`, `<richContentEnabled>`, `<sessionTimeout>`
@@ -58,6 +69,9 @@ Before publishing (only when user asks):
 - `<botDialogs>` level (inside botVersions): `<developerName>`, `<label>`, `<isPlaceholderDialog>`, `<showInFooterMenu>`
 - `<agentType>` valid value: `EinsteinServiceAgent` — verified from real org retrieve 2026-06-17. EinsteinCopilot and Default are both invalid.
 - `<type>` valid value: `InternalCopilot` — verified from real org retrieve 2026-06-17. EinsteinCopilot is invalid.
+- `<systemPrompt>` is NOT a botVersions field — it was listed here in error and broke every deploy that
+  used `sf_create_agent`'s old `instructions` param. Corrected 2026-07-30 from a real org retrieve.
+- `<role>` (from `persona`) IS valid on botVersions, as are `company` and `toneType`.
 
 ## Flow testing — two builders, test both
 `sf_create_flow` builds XML with `buildFlowXml` (SOAP/upsertMetadata). `sf_create_flow_from_xml`

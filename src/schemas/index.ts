@@ -998,11 +998,10 @@ export const CreateAgentSchema = z.object({
   agentName: z.string().min(1).max(40).regex(/^[A-Za-z][A-Za-z0-9]*$/, "Letters and numbers only — Salesforce Bot API names do not allow underscores or spaces").describe("Agent API name — letters and numbers only, NO underscores (Salesforce rejects underscores in Bot developer names). Max 40 chars. e.g. 'SalesAgent', 'SupportBot'. Used in all subsequent calls (sf_create_agent_topic, sf_create_agent_planner)."),
   label: z.string().min(1).max(255).describe("Agent display label shown to users, e.g. 'Sales Assistant'"),
   description: z.string().max(1000).optional().describe("Agent description"),
-  type: z.enum(["Default", "EinsteinCopilot"]).default("EinsteinCopilot").describe("Agent type — use EinsteinCopilot for standard Agentforce agents"),
   company: z.string().max(255).optional().describe("Company name for the agent's context"),
-  persona: z.string().max(5000).optional().describe("Agent persona/role description, e.g. 'A knowledgeable sales expert who helps close deals'"),
+  persona: z.string().max(5000).optional().describe("Agent persona/role description, e.g. 'A knowledgeable sales expert who helps close deals'. Deployed as the BotVersion <role>."),
   tone: z.enum(["Formal", "Neutral", "Casual"]).default("Neutral").describe("Communication tone for agent responses"),
-  instructions: z.string().max(10000).optional().describe("System-level instructions that guide agent behavior across all topics"),
+  plannerName: z.string().min(1).max(80).optional().describe("API name of the GenAiPlannerBundle to attach this agent to. Normally omitted on the first call (the planner does not exist yet) — after sf_create_agent_planner succeeds, call this tool again with the same agentName plus plannerName to complete the agent→planner link. This tool is idempotent, so re-running it updates the existing agent."),
 }).strict();
 
 export const CreateAgentTopicSchema = z.object({
@@ -1016,8 +1015,8 @@ export const CreateAgentTopicSchema = z.object({
 }).strict();
 
 export const CreateAgentActionSchema = z.object({
-  agentName: z.string().min(1).max(80).describe("Parent agent API name — informational only, NOT written to the action XML."),
-  topicName: z.string().min(1).max(80).describe("Parent topic API name — informational only, NOT written to the action XML. You must still pass this action's API name (actionName) in the 'actions' array when calling sf_create_agent_topic."),
+  agentName: z.string().min(1).max(80).optional().describe("Parent agent API name — optional and informational only, NOT written to the action XML. Safe to omit."),
+  topicName: z.string().min(1).max(80).optional().describe("Parent topic API name — optional and informational only, NOT written to the action XML. Safe to omit. You must still pass this action's API name (actionName) in the 'actions' array when calling sf_create_agent_topic."),
   actionName: z.string().min(1).max(80).regex(/^[A-Za-z][A-Za-z0-9_]*$/).describe("Action API name. Letters, numbers, underscores. Remember this name — you must pass it in the 'actions' array when calling sf_create_agent_topic."),
   label: z.string().min(1).max(255).describe("Action label"),
   description: z.string().min(1).max(5000).describe("What this action does — used by the AI to decide when to invoke it"),
@@ -1033,7 +1032,9 @@ export const CreateAgentActionSchema = z.object({
 export const CreateAgentPlannerSchema = z.object({
   agentName: z.string().min(1).max(80).regex(/^[A-Za-z][A-Za-z0-9]*$/, "Letters and numbers only — must match the Bot API name exactly as used in sf_create_agent").describe("Agent API name — must exactly match the agentName used in sf_create_agent (no underscores)."),
   label: z.string().min(1).max(255).optional().describe("Planner display label (defaults to agentName)"),
+  description: z.string().min(1).max(1000).optional().describe("Planner description. Required by Salesforce — defaults to a generated description if omitted."),
   topicNames: z.array(z.string().min(1).max(80)).min(1).describe("COMPLETE list of topic API names to wire to this agent. WARNING: This REPLACES any existing planner — if you add a new topic to an existing agent, include ALL previous topic names plus the new one. Omitting a topic here removes it from the agent."),
+  actionNames: z.array(z.string().min(1).max(80)).optional().describe("Action API names to attach directly to the planner rather than through a topic (e.g. a knowledge action). Most agents leave this empty and put actions in topics."),
 }).strict();
 
 // ─── MCP SERVER MANAGEMENT ───────────────────────────────────────────────────

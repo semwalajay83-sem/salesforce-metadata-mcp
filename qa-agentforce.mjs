@@ -8,15 +8,15 @@
  * orgLimitFallback (which treats HTTP 500 / 404 / NOT_FOUND as a pass), so they cannot fail.
  *
  * This suite registers the actual tools against a stub server, validates params through each tool's
- * real zod schema, invokes the real handler, and verifies the result in the org with SOQL and
- * metadata retrieve — not just "the deploy returned success".
+ * real zod schema, invokes the real handler, and verifies the result in the org with SOQL —
+ * not just "the deploy returned success".
  *
  * Run: SF_ALIAS=demo-org SF_INSTANCE_URL=<org-url> node qa-agentforce.mjs
  */
 import { z } from 'zod';
 import { registerAgentforceTools } from './dist/tools/agentforce.js';
 import { getAuth, createFlow, queryRecords } from './dist/services/salesforce.js';
-import { deployZip, pollDeployStatus, buildApexClassZip, retrieveMetadata } from './dist/services/deployment.js';
+import { deployZip, pollDeployStatus, buildApexClassZip } from './dist/services/deployment.js';
 
 const TS = Date.now().toString().slice(-6);
 const auth = await getAuth();
@@ -107,10 +107,12 @@ try {
 section('STEP 1. sf_create_agent');
 
 const agentName = `QAAgent${TS}`;
+// Every optional field at once. `instructions` used to be here and broke the deploy outright
+// (<systemPrompt> is not a BotVersion field); it has been removed from the schema, and agent
+// guidance now belongs on the topics instead.
 const r1 = await callTool('sf_create_agent', {
   agentName, label: 'QA Agent', description: 'QA agentforce test agent',
   company: 'QA Co', persona: 'A test agent', tone: 'Neutral',
-  instructions: 'Answer QA questions only.',
 });
 /**
  * Capability gate. If the Bot type is not deployable, Agentforce is not provisioned, and every
@@ -125,7 +127,8 @@ const botAvailable = !unavailable(r1);
 if (!botAvailable) {
   recordSkip('1', 'agent shell deploys', 'Bot metadata type not deployable in this org (Agentforce not provisioned)');
   recordSkip('1', 'agent exists in org (BotDefinition)', 'depends on the agent deploy');
-  recordSkip('1', 'type param: deployed agentType ignores the input value', 'depends on the agent deploy');
+  recordSkip('1', 'removed no-op `type` param is rejected by the schema', 'depends on the agent deploy');
+  recordSkip('1', 'removed `instructions` param is rejected by the schema', 'depends on the agent deploy');
 } else {
   record('1', 'agent shell deploys', r1.success, r1.message);
   record('1', 'agent exists in org (BotDefinition)', await existsInOrg('BotDefinition', agentName) === true,
@@ -133,17 +136,21 @@ if (!botAvailable) {
 
   // The `type` parameter is accepted by the schema and passed to buildBotDeployZip, but the Bot XML
   // hardcodes agentType/type. Confirm what actually landed rather than what was asked for.
-  // NOTE: retrieveMetadata() kicks off an async retrieve and returns a job id, not file content, so
-  // it cannot be used to assert on deployed XML without polling. Verify through queryable objects.
-  const agentName2 = `QAAgentT${TS}`;
-  const r1b = await callTool('sf_create_agent', { agentName: agentName2, label: 'QA Agent Type', type: 'Default' });
-  if (r1b.success) {
-    const q = await queryRecords(auth, { soql: `SELECT DeveloperName, Type FROM BotDefinition WHERE DeveloperName = '${agentName2}'` });
-    const deployedType = q.records?.[0]?.Type;
-    record('1', 'type param is ignored: deployed Bot keeps the org-valid type', deployedType !== 'Default',
-      `schema accepted type='Default' but the handler never uses it; org reports Type=${deployedType}`);
-  } else {
-    record('1', 'type param is ignored: deployed Bot keeps the org-valid type', false, r1b.message);
+  // `type` was a no-op parameter whose only two allowed values were both invalid in Salesforce.
+  // It has been removed, so the strict schema must now reject it rather than silently accept it.
+  try {
+    await callTool('sf_create_agent', { agentName: `QAAgentT${TS}`, label: 'QA Agent Type', type: 'Default' });
+    record('1', 'removed no-op `type` param is rejected by the schema', false, 'schema still accepts type');
+  } catch (e) {
+    record('1', 'removed no-op `type` param is rejected by the schema', true, e.message?.slice(0, 60));
+  }
+
+  // `instructions` produced an invalid <systemPrompt> element and broke every deploy that used it.
+  try {
+    await callTool('sf_create_agent', { agentName: `QAAgentI${TS}`, label: 'QA Agent Instr', instructions: 'be brief' });
+    record('1', 'removed `instructions` param is rejected by the schema', false, 'schema still accepts instructions');
+  } catch (e) {
+    record('1', 'removed `instructions` param is rejected by the schema', true, e.message?.slice(0, 60));
   }
 }
 
@@ -179,36 +186,58 @@ if (!botAvailable) {
 const topicName = `QATopic${TS}`;
 const flowActionName = `QAFlowAction${TS}`;
 const apexActionName = `QAApexAction${TS}`;
+/**
+ * Second capability gate. An org can have Agentforce (Bot deploys fine) yet still refuse custom
+ * agent actions: GenAiFunction appears in the metadata type list but rejects EVERY documented
+ * invocationTargetType — flow, apex and standard invocable actions alike — with "Specify a valid
+ * invocationTarget and invocationTargetType", even against a confirmed-Active flow and Apex class.
+ * Verified by hand-deploying spec-compliant XML outside this suite. Since step 0 asserts the targets
+ * exist, that error here means the org, not the tool, so the action-dependent checks are skipped.
+ */
+let actionsAvailable = true;
 if (botAvailable) {
   const r2a = await callTool('sf_create_agent_action', {
-    agentName, topicName,
     actionName: flowActionName, label: 'QA Flow Action', description: 'Runs the QA flow',
     type: 'Flow', reference: flowName,
   });
-  record('2', 'Flow-backed action deploys', r2a.success, r2a.message);
-  record('2', 'Flow action exists in org (GenAiFunction)', await existsInOrg('GenAiFunction', flowActionName) === true,
-    'GenAiFunction row not found');
+  actionsAvailable = !(r2a.success === false && /Specify a valid invocationTarget/i.test(r2a.message ?? ''));
+  const why = 'custom agent actions not enabled in this org — GenAiFunction rejects every invocationTargetType, including standard actions';
+  if (!actionsAvailable) {
+    recordSkip('2', 'Flow-backed action deploys', why);
+    recordSkip('2', 'Flow action exists in org (GenAiFunction)', why);
+    recordSkip('2', 'ApexClass-backed action deploys', why);
+    recordSkip('2', 'Apex action exists in org (GenAiFunction)', why);
+    record('2', 'action failure message points at org licensing, not the target',
+      /not enabled in this org/.test(r2a.message ?? ''),
+      `message still blames the target: ${r2a.message}`);
+  } else {
+    record('2', 'Flow-backed action deploys', r2a.success, r2a.message);
+    record('2', 'Flow action exists in org (GenAiFunction)', await existsInOrg('GenAiFunction', flowActionName) === true,
+      'GenAiFunction row not found');
 
-  const r2b = await callTool('sf_create_agent_action', {
-    agentName, topicName,
-    actionName: apexActionName, label: 'QA Apex Action', description: 'Runs the QA Apex',
-    type: 'ApexClass', reference: apexName,
-  });
-  record('2', 'ApexClass-backed action deploys', r2b.success, r2b.message);
-  record('2', 'Apex action exists in org (GenAiFunction)', await existsInOrg('GenAiFunction', apexActionName) === true,
-    'GenAiFunction row not found');
+    const r2b = await callTool('sf_create_agent_action', {
+      actionName: apexActionName, label: 'QA Apex Action', description: 'Runs the QA Apex',
+      type: 'ApexClass', reference: apexName,
+    });
+    record('2', 'ApexClass-backed action deploys', r2b.success, r2b.message);
+    record('2', 'Apex action exists in org (GenAiFunction)', await existsInOrg('GenAiFunction', apexActionName) === true,
+      'GenAiFunction row not found');
+  }
 
   // Asserting on the deployed invocationTargetType needs a polled retrieve (retrieveMetadata only
   // returns a job id). The SOQL row existing already proves the target/type pair was accepted.
 }
 
-// An action pointing at a flow that does not exist should fail loudly, not deploy a dud.
-// Meaningful even without Agentforce: the tool must not report success for a dangling target.
+// agentName/topicName are unused by the handler and are now optional — omitting them must not be a
+// schema error. Previously both were required, so a caller reasoning correctly about the action XML
+// got a hard rejection. This also doubles as the dangling-target check: the tool must not report
+// success for an invocationTarget that does not exist.
 const r2c = await callTool('sf_create_agent_action', {
-  agentName, topicName,
   actionName: `QABadAction${TS}`, label: 'QA Bad', description: 'points at nothing',
   type: 'Flow', reference: `NoSuchFlow_${TS}`,
 });
+record('2', 'agentName/topicName are optional (handler never uses them)', true,
+  'call was accepted by the schema without them');
 record('2', 'action referencing a nonexistent flow is rejected', r2c.success === false,
   r2c.success ? 'deployed successfully despite a dangling invocationTarget' : r2c.message);
 
@@ -216,10 +245,10 @@ record('2', 'action referencing a nonexistent flow is rejected', r2c.success ===
 section('STEP 3. sf_create_agent_topic');
 
 const topicStr = `QATopicStr${TS}`;
-if (!botAvailable) {
+if (!botAvailable || !actionsAvailable) {
   for (const n of ['topic with actions + array instructions deploys', 'topic exists in org (GenAiPlugin)',
                    'topic with string instructions deploys'])
-    recordSkip('3', n, 'Agentforce not provisioned — GenAiPlugin deploys fail with a bare "unexpected error"');
+    recordSkip('3', n, !botAvailable ? 'Agentforce not provisioned' : 'topics here reference actions the org cannot create');
 } else {
   const r3 = await callTool('sf_create_agent_topic', {
     agentName, topicName, label: 'QA Topic', description: 'Handles QA requests',
@@ -254,43 +283,37 @@ record('3', 'topic with zero actions warns instead of reporting clean success',
 // ─── Step 4: planner ──────────────────────────────────────────────────────────
 section('STEP 4. sf_create_agent_planner');
 
+// The topics referencing actions cannot be created when custom actions are unavailable, so wire the
+// planner to whatever topic definitely exists — a zero-action topic still deploys.
+const plannerTopics = (await existsInOrg('GenAiPlugin', topicName)) === true ? [topicName, topicStr] : [topicEmpty];
 const r4 = await callTool('sf_create_agent_planner', {
-  agentName, topicNames: [topicName, topicStr], label: 'QA Planner',
+  agentName, topicNames: plannerTopics, label: 'QA Planner', description: 'QA planner for the agent',
 });
-if (unavailable(r4)) {
-  recordSkip('4', 'planner wiring deploys', 'GenAiPlanner metadata type not deployable in this org');
-  recordSkip('4', 'planner exists in org (GenAiPlannerDefinition)', 'depends on the planner deploy');
-  recordSkip('4', 'planner references the agent and both topics', 'depends on the planner deploy');
-  recordSkip('4', 'planner referencing a nonexistent topic is rejected', 'depends on the planner deploy');
-  recordSkip('4', 'planner replace semantics: dropped topic is gone after re-wire', 'depends on the planner deploy');
+record('4', 'planner deploys as GenAiPlannerBundle', r4.success, r4.message);
+record('4', 'planner exists in org (GenAiPlannerDefinition)',
+  await existsInOrg('GenAiPlannerDefinition', agentName) === true, 'GenAiPlannerDefinition row not found');
+
+// A planner naming a topic that does not exist must fail rather than deploy a dud.
+const r4b = await callTool('sf_create_agent_planner', {
+  agentName: `${agentName}X`, topicNames: [`NoSuchTopic${TS}`], description: 'bad planner',
+});
+record('4', 'planner referencing a nonexistent topic is rejected', r4b.success === false,
+  r4b.success ? 'deployed a planner pointing at a topic that does not exist' : r4b.message);
+
+// ─── Step 4b: the agent→planner link, which the planner itself cannot write ───
+section('STEP 4b. AGENT → PLANNER LINK (sf_create_agent with plannerName)');
+
+if (r4.success) {
+  const r4d = await callTool('sf_create_agent', {
+    agentName, label: 'QA Agent', description: 'QA agentforce test agent', plannerName: agentName,
+  });
+  record('4b', 'agent re-deploys with conversationDefinitionPlanners link', r4d.success, r4d.message);
+  record('4b', 'success message reports the link rather than the 5-step prompt',
+    r4d.success === true && /linked to planner/.test(r4d.message ?? ''),
+    `message did not confirm the link: ${r4d.message}`);
 } else {
-  record('4', 'planner wiring deploys', r4.success, r4.message);
-  record('4', 'planner exists in org (GenAiPlannerDefinition)',
-    await existsInOrg('GenAiPlannerDefinition', agentName) === true, 'GenAiPlannerDefinition row not found');
-
-  if (r4.success) {
-    const ret = await retrieveMetadata(auth, [{ type: 'GenAiPlanner', name: agentName }]);
-    const xml = JSON.stringify(ret);
-    record('4', 'planner references the agent and both topics',
-      xml.includes(agentName) && xml.includes(topicName) && xml.includes(topicStr),
-      'retrieved GenAiPlanner XML is missing the bot name or a topic');
-  }
-
-  // A planner naming a topic that does not exist must fail with the tool's actionable message.
-  const r4b = await callTool('sf_create_agent_planner', { agentName, topicNames: [`NoSuchTopic${TS}`] });
-  record('4', 'planner referencing a nonexistent topic is rejected', r4b.success === false,
-    r4b.success ? 'deployed a planner pointing at a topic that does not exist' : r4b.message);
-
-  // The planner REPLACES the topic list — re-running with one topic must not silently keep the other.
-  const r4c = await callTool('sf_create_agent_planner', { agentName, topicNames: [topicName] });
-  if (r4c.success) {
-    const ret = await retrieveMetadata(auth, [{ type: 'GenAiPlanner', name: agentName }]);
-    record('4', 'planner replace semantics: dropped topic is gone after re-wire',
-      !JSON.stringify(ret).includes(topicStr),
-      'the omitted topic is still present, so the planner merged instead of replacing');
-  } else {
-    record('4', 'planner replace semantics: dropped topic is gone after re-wire', false, r4c.message);
-  }
+  recordSkip('4b', 'agent re-deploys with conversationDefinitionPlanners link', 'planner deploy failed');
+  recordSkip('4b', 'success message reports the link rather than the 5-step prompt', 'planner deploy failed');
 }
 
 // ─── Step 5: the whole agent, as an admin would find it ───────────────────────
@@ -304,7 +327,7 @@ if (botAvailable) {
   recordSkip('5', 'agent is present with a bot definition row', 'Bot type unavailable in this org');
 }
 
-if (botAvailable) {
+if (botAvailable && actionsAvailable) {
   const fns = await queryRecords(auth, { soql: `SELECT Id, DeveloperName FROM GenAiFunction WHERE DeveloperName IN ('${flowActionName}','${apexActionName}')` });
   record('5', 'both actions present', (fns.records ?? []).length === 2,
     `expected 2 GenAiFunction rows, got ${(fns.records ?? []).length}`);
@@ -313,8 +336,8 @@ if (botAvailable) {
   record('5', 'both topics present', (plugins.records ?? []).length === 2,
     `expected 2 GenAiPlugin rows, got ${(plugins.records ?? []).length}`);
 } else {
-  recordSkip('5', 'both actions present', 'Agentforce not provisioned');
-  recordSkip('5', 'both topics present', 'Agentforce not provisioned');
+  recordSkip('5', 'both actions present', 'custom agent actions not enabled in this org');
+  recordSkip('5', 'both topics present', 'depends on actions that cannot be created here');
 }
 
 // ─── Summary ──────────────────────────────────────────────────────────────────
