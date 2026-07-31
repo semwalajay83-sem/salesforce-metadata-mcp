@@ -1,5 +1,79 @@
 # Changelog
 
+## [2.9.0] - 2026-08-01
+
+### Fixed — 5 real bugs from a genuine manual test session in Claude Desktop, all reproduced and re-verified live
+
+Ajay tested v2.8.9 by hand in Claude Desktop against a real Developer Edition org — created a custom
+object, six custom fields, and two Flows built against them — and reported five specific issues found
+along the way. Every one below was reproduced first (not assumed from the report), root-caused in the
+source, fixed, and re-verified against `demo-org` before being called done.
+
+**`sf_create_flow` emits duplicate rule developer names for 2+ Decision elements (blocking).**
+Reproduced exactly: `Deployment failed: Duplicate developer name: Rule_1`. Root cause: each Decision's
+rule `<name>` was `Rule_1`, `Rule_2`, ... scoped per-decision, but Salesforce requires uniqueness across
+the whole Flow. Fixed in both XML generators by namespacing with the parent Decision's own name
+(`Decision_One_Rule_1`), verified unique in the deployed XML afterward. Fixing this surfaced a second,
+related bug in the same code path: `<defaultConnectorLabel>` was only emitted when `defaultConnector`
+was set, but Salesforce requires it unconditionally (it labels the implicit "no rule matched" branch,
+which exists whether or not it connects anywhere) — every existing Decision test in this repo's own
+suite happened to set `defaultConnector` explicitly, which is exactly why this had never been caught.
+Fixed in both generators; added a permanent regression test with two Decisions, the second deliberately
+relying on implicit fall-through. Flow suite: 142→144 checks, 144/144 passing.
+
+**`sf_create_flow`'s filter/assignment values only accepted strings, and GetRecords filters silently
+mistyped numbers.** The schema rejected a native boolean (`value: true`) with a bare zod error; the
+reported workaround (`value: "true"`) did work correctly (booleans were already string-sniffed
+correctly), but investigating this surfaced a real, more serious, previously-unreported bug in the same
+code: GetRecords filter values had NO numeric detection at all — unlike Decision/CreateRecords/
+UpdateRecords, which all correctly detect numeric-looking values, GetRecords filters emitted
+`<stringValue>100</stringValue>` for every non-boolean value including numbers, which risks incorrect
+or no matches when filtering Number/Currency/Percent fields with comparison operators. Fixed the missing
+numeric detection in both generators, and widened `rightValue`/`filterValue`/`filters[].value`/
+`inputAssignments[].value`/`assignments[].value` to accept string, number, or boolean directly (coerced
+to string before the existing, now-correct typed-XML logic) so the natural call shape works without a
+string-coercion workaround. Verified live: a native boolean and a native number filter both produce the
+correct typed XML element in the deployed flow.
+
+**REST describe / SOQL not seeing custom fields that the Metadata API and Tooling API confirm exist.**
+Reproduced exactly — `describe field count: 10` (only standard fields), matching the report precisely,
+persisting well past 60 seconds and after granting FLS (also reproduced: 0 grants by default). Ruled
+out an in-process cache (there isn't one — `sf_describe_object` makes a fresh HTTP call every time,
+confirmed by reading the code) and ruled out XML element ordering in the picklist-value generator via a
+controlled live A/B test (an initial hypothesis that looked promising but didn't hold up once tested
+head-to-head). What's actually happening: Salesforce's own REST describe/SOQL schema cache lagged
+behind the Metadata API and (intermittently, itself) the Tooling API by 10+ minutes on this org during
+testing — a genuine platform-side propagation characteristic, not something any client-side code
+change can fix. Implemented the mitigation Ajay suggested regardless: `sf_describe_object` gained
+`waitForFields`/`timeoutSeconds` to poll until named fields appear (or say clearly that they still
+haven't, with a pointer to the Tooling API to confirm the field truly exists), so callers don't have to
+hand-roll retry loops. Documented plainly in both the tool description and the CHANGELOG that this is
+an org-side lag, not a bug in this server — don't re-diagnose it as one without new evidence.
+
+**`sf_create_custom_field` leaves every new field with zero FLS grants and no indication a follow-up
+call is needed.** Reproduced: `sf_get_field_permissions` returns 0 grants immediately after a
+`success: true` field creation, for every profile including System Administrator. Fixed by checking FLS
+right after creation and appending an explicit warning to the response when none exist, naming the
+exact fix (`sf_create_field_level_security`) — chose this over auto-granting FLS by default since that
+would silently change existing behavior; surfacing the truth is a strictly additive fix.
+
+**`sf_create_flow_from_xml` surfaced raw, unhelpful Salesforce schema errors for 3 common mistakes.**
+Added `validateAndNormalizeFlowXml()`: a bounded, depth-tracking tokenizer (not a full XML parser —
+sufficient for direct children of the root `<Flow>` element) that catches, before ever deploying: (1)
+non-contiguous top-level elements of the same type (interleaved `<assignments>`/`<decisions>` etc.,
+which Salesforce reports as a baffling "Element X is duplicated at this location in type Flow" instead
+of naming the real issue — grouping), (2) missing `<start>` `locationX`/`locationY`, auto-defaulted
+rather than just flagged since there's no ambiguity about a safe default, (3) an SObject-typed
+`<variables>` entry missing `<objectType>`, naming the specific variable (Salesforce's own error for
+this one was already good — replicated its style for consistency, and to catch it pre-deploy instead of
+after). Verified live: interleaved elements and a missing objectType are both now rejected pre-deploy
+with a specific, actionable message and never reach Salesforce at all; missing start coordinates are
+silently defaulted and the flow deploys successfully.
+
+**Full regression, both before committing and after every individual fix**: `qa-flow-comprehensive.mjs`
+142→144/144 (2 new checks from the Bug 1 regression test, all passing). `test-suite.mjs` and the
+Agentforce suites held their existing pass rates — none of these five fixes touch Agentforce code paths.
+
 ## [2.8.9] - 2026-07-31
 
 ### Fixed — the v2.8.8 command-injection guard was over-broad; narrowed after a second round of live testing

@@ -164,6 +164,17 @@ export const AddPicklistValuesSchema = z.object({
 
 // ─── Create Flow ──────────────────────────────────────────────────────────────
 
+// Flow element literal values (Decision rightValue, GetRecords filter value, CreateRecords/
+// UpdateRecords inputAssignments value, Assignment value) were string-only, so a caller passing a
+// native boolean/number for a Checkbox or Number field — the natural, obvious way to call this tool —
+// got a hard zod rejection ("expected string, received boolean") instead of it just working. The
+// generator functions downstream already special-case the strings "true"/"false" and numeric-looking
+// strings into <booleanValue>/<numberValue> XML, so accepting the native type here and stringifying
+// it produces identical output to what already worked when the caller manually wrote '"true"' — this
+// widens the input surface without touching the (already-correct, once given a string) XML generation
+// logic. Found 2026-07-31 from a real user report.
+const FlowLiteralValueSchema = z.union([z.string(), z.number(), z.boolean()]).transform(v => String(v));
+
 export const FlowVariableSchema = z.object({
   name: z.string().min(1).max(80).describe("Variable API name, e.g. 'myVariable'"),
   dataType: z.enum(["String", "Number", "Boolean", "Date", "DateTime", "SObject"])
@@ -195,7 +206,7 @@ export const FlowElementSchema = z.object({
   conditions: z.array(z.object({
     leftValueRef: z.string().describe("Left side reference, e.g. 'myVar' or '$Record.Status__c'"),
     operator: z.string().describe("EqualTo, NotEqualTo, GreaterThan, LessThan, GreaterThanOrEqualTo, LessThanOrEqualTo, IsNull, IsNotNull, StartsWith, Contains, EndsWith"),
-    rightValue: z.string().optional().describe("Right side literal value. For IsNull/IsNotNull use 'true' or 'false'."),
+    rightValue: FlowLiteralValueSchema.optional().describe("Right side literal value — string, number, or boolean. For IsNull/IsNotNull use true/false or 'true'/'false'."),
     rightValueRef: z.string().optional().describe("Right side flow variable reference"),
     label: z.string().optional().describe("Label for this rule (defaults to rightValue or 'Rule N')"),
     nextElement: z.string().optional().describe("Element to go to when this rule matches (connector for this specific rule)"),
@@ -205,12 +216,12 @@ export const FlowElementSchema = z.object({
   objectApiName: z.string().optional().describe("Object API name for record operations"),
   filterField: z.string().optional().describe("Single filter field for GetRecords (use filters array for multiple filters)"),
   filterOperator: z.string().optional().describe("Filter operator for GetRecords. Supported: EqualTo, NotEqualTo, GreaterThan, LessThan, GreaterThanOrEqualTo, LessThanOrEqualTo, IsNull, StartsWith, EndsWith. NOTE: Contains is NOT supported by Salesforce Flow record lookups."),
-  filterValue: z.string().optional().describe("Literal filter value string (uses stringValue XML). Use filterValueRef when the value comes from a flow variable."),
+  filterValue: FlowLiteralValueSchema.optional().describe("Literal filter value — string, number, or boolean; typed XML element (stringValue/numberValue/booleanValue) is chosen automatically. Use filterValueRef when the value comes from a flow variable."),
   filterValueRef: z.string().optional().describe("Flow variable reference for filter value (uses elementReference XML). Use filterValue for literal strings."),
   filters: z.array(z.object({
     field: z.string().describe("Field API name to filter on"),
     operator: z.string().default("EqualTo").describe("Supported: EqualTo, NotEqualTo, GreaterThan, LessThan, GreaterThanOrEqualTo, LessThanOrEqualTo, IsNull, StartsWith, EndsWith. Contains is NOT supported."),
-    value: z.string().optional().describe("Literal string/number/boolean value (uses stringValue XML)"),
+    value: FlowLiteralValueSchema.optional().describe("Literal filter value — string, number, or boolean; typed XML element (stringValue/numberValue/booleanValue) is chosen automatically."),
     valueRef: z.string().optional().describe("Flow variable reference — generates elementReference XML"),
   })).optional().describe("Multiple filters for GetRecords. Each filter: valueRef uses elementReference XML, value uses stringValue XML. Contains operator is not supported — will be rejected with a helpful error."),
   outputVariable: z.string().optional().describe("Variable to store retrieved record(s)"),
@@ -233,7 +244,7 @@ export const FlowElementSchema = z.object({
   // CreateRecords
   inputAssignments: z.array(z.object({
     field: z.string().describe("Field API name to set, e.g. 'Name', 'Status__c'"),
-    value: z.string().optional().describe("Literal value to set"),
+    value: FlowLiteralValueSchema.optional().describe("Literal value to set — string, number, or boolean; typed XML element chosen automatically."),
     valueRef: z.string().optional().describe("Flow variable reference, e.g. 'myVar' or 'currentItem.Name'"),
   })).optional().describe("Field values to set when creating records (CreateRecords). Each entry sets one field."),
   // DeleteRecords
@@ -243,7 +254,7 @@ export const FlowElementSchema = z.object({
     assignToRef: z.string().describe("Variable to assign to"),
     operator: z.string().default("Assign").describe("Operator: Assign, Add, etc."),
     valueRef: z.string().optional().describe("Reference value"),
-    value: z.string().optional().describe("Literal value"),
+    value: FlowLiteralValueSchema.optional().describe("Literal value — string, number, or boolean; typed XML element chosen automatically."),
   })).optional().describe("Assignments for Assignment elements"),
   // Screen
   screenFields: z.array(z.object({
@@ -3151,6 +3162,8 @@ export const CreateFlowFromXmlSchema = z.object({
 export const DescribeObjectSchema = z.object({
   objectApiName: z.string().min(1).describe("SObject API name to describe, e.g. 'Account', 'My_Object__c'"),
   fieldsOnly: z.boolean().default(false).describe("If true, returns only the field list (name, label, type, required, picklist values) and omits child relationships/record type info — use for a smaller, faster response when you only need field names/types before a query or DML call."),
+  waitForFields: z.array(z.string()).optional().describe("Field API names to wait for. Salesforce's own REST describe/SOQL schema cache can lag several minutes behind a metadata deploy on some orgs (confirmed live 2026-07-31: a field visible via Tooling API and the Metadata API can still be invisible to REST describe and SOQL long after creation) — this isn't caused by anything in this MCP server (no caching happens here; every call is a fresh HTTP request), so it can't be fixed client-side, only worked around. When set, retries describe until every named field appears or timeoutSeconds elapses, instead of you polling manually."),
+  timeoutSeconds: z.number().int().min(1).max(300).default(60).describe("Max time to poll when waitForFields is set. Ignored otherwise."),
 }).strict();
 
 export const GetApexTriggerSchema = z.object({

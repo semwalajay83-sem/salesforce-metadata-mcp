@@ -721,7 +721,7 @@ function buildFlowXml(params: {
                 : soapTypedRv(c.rightValue);
             return `
             <met:rules>
-              <met:name>Rule_${i + 1}</met:name>
+              <met:name>${x(el.name)}_Rule_${i + 1}</met:name>
               <met:label>${x(ruleLabel)}</met:label>
               <met:conditionLogic>and</met:conditionLogic>
               <met:conditions>
@@ -732,8 +732,13 @@ function buildFlowXml(params: {
               ${ruleConnector}
             </met:rules>`;
           }).join("\n");
-          const defaultOut = el.defaultConnector
-            ? `<met:defaultConnector><met:targetReference>${x(el.defaultConnector)}</met:targetReference></met:defaultConnector>\n            <met:defaultConnectorLabel>Default Outcome</met:defaultConnectorLabel>` : "";
+          // Salesforce requires <defaultConnectorLabel> on every Decision unconditionally — it's the
+          // label for the implicit "none of the rules matched" branch, which exists whether or not
+          // that branch actually connects anywhere. Previously only emitted when defaultConnector was
+          // set, so any Decision relying on the implicit fall-through (the common case for a flow's
+          // last Decision) failed with "Enter a label for the default outcome." Found 2026-07-31 while
+          // reproducing a reported Bug 1 case with two Decisions, one of them fall-through.
+          const defaultOut = `${el.defaultConnector ? `<met:defaultConnector><met:targetReference>${x(el.defaultConnector)}</met:targetReference></met:defaultConnector>\n            ` : ""}<met:defaultConnectorLabel>Default Outcome</met:defaultConnectorLabel>`;
           return `<met:decisions>
             <met:name>${x(el.name)}</met:name>
             <met:label>${x(el.label)}</met:label>
@@ -744,12 +749,20 @@ function buildFlowXml(params: {
           </met:decisions>`;
         }
         case "GetRecords": {
+          // Was boolean-vs-string only — every other typed-value helper in this file (Decision,
+          // CreateRecords, UpdateRecords) also checks for a numeric pattern and emits <numberValue>.
+          // GetRecords filters were the one place that didn't, so filtering a Number/Currency/Percent
+          // field emitted <stringValue>100</stringValue> instead of <numberValue>100</numberValue> —
+          // a real correctness bug (string vs numeric comparison), not just an inconsistency, found
+          // 2026-07-31 investigating a reported filter-typing issue.
           const buildFilterValue = (value?: string, valueRef?: string): string =>
             valueRef
               ? `<met:elementReference>${x(valueRef)}</met:elementReference>`
               : (value === "true" || value === "false")
                 ? `<met:booleanValue>${value}</met:booleanValue>`
-                : `<met:stringValue>${x(value ?? "")}</met:stringValue>`;
+                : (value !== undefined && /^-?\d+(\.\d+)?$/.test(value))
+                  ? `<met:numberValue>${value}</met:numberValue>`
+                  : `<met:stringValue>${x(value ?? "")}</met:stringValue>`;
           const allFilters: Array<{ field: string; operator: string; value?: string; valueRef?: string }> = [];
           if (el.filterField) {
             allFilters.push({ field: el.filterField, operator: el.filterOperator ?? "EqualTo", value: el.filterValue, valueRef: el.filterValueRef });
@@ -1176,7 +1189,7 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
           const rc = c.nextElement ? `<connector><targetReference>${x(c.nextElement)}</targetReference></connector>` : "";
           return `
     <rules>
-      <name>Rule_${i + 1}</name>
+      <name>${x(el.name)}_Rule_${i + 1}</name>
       <label>${x(c.label ?? `Rule_${i + 1}`)}</label>
       <conditionLogic>and</conditionLogic>
       <conditions>
@@ -1187,8 +1200,8 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
       ${rc}
     </rules>`;
         }).join("");
-        const defaultOut = el.defaultConnector
-          ? `<defaultConnector><targetReference>${x(el.defaultConnector)}</targetReference></defaultConnector>\n    <defaultConnectorLabel>Default Outcome</defaultConnectorLabel>` : "";
+        // See the SOAP builder's identical fix above: defaultConnectorLabel is required unconditionally.
+        const defaultOut = `${el.defaultConnector ? `<defaultConnector><targetReference>${x(el.defaultConnector)}</targetReference></defaultConnector>\n    ` : ""}<defaultConnectorLabel>Default Outcome</defaultConnectorLabel>`;
         decisions.push(`
   <decisions>
     <name>${x(el.name)}</name>
@@ -1230,6 +1243,8 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
             valXml = `<elementReference>${x(f.valueRef)}</elementReference>`;
           } else if (f.value === "true" || f.value === "false") {
             valXml = `<booleanValue>${f.value}</booleanValue>`;
+          } else if (f.value !== undefined && /^-?\d+(\.\d+)?$/.test(f.value)) {
+            valXml = `<numberValue>${f.value}</numberValue>`;
           } else {
             valXml = `<stringValue>${x(f.value ?? "")}</stringValue>`;
           }
@@ -1516,6 +1531,84 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
   ${screens.join("")}
   ${subflows.join("")}
 </Flow>`;
+}
+
+/**
+ * Pre-validates raw Flow XML (sf_create_flow_from_xml) against three real Salesforce schema
+ * constraints that previously only surfaced as bare, hard-to-diagnose deploy errors — found from a
+ * real user report 2026-07-31 who hit all three in sequence, each costing a failed deploy round-trip:
+ *
+ * 1. Element grouping: Salesforce requires every occurrence of a given top-level child tag (e.g. all
+ *    <assignments>, all <decisions>) to be contiguous — interleaving them fails with the unhelpful
+ *    "Element X is duplicated at this location in type Flow", which doesn't say WHY it's "duplicated"
+ *    (it isn't, structurally — it's just not grouped). Detected here via a depth-tracking tokenizer
+ *    (not a full XML parser — sufficient for direct children of the root <Flow> element) rather than
+ *    guessing the complete canonical tag order, which Salesforce doesn't document precisely enough to
+ *    reproduce with confidence.
+ * 2. <start> requires locationX/locationY or fails with "Required field is missing: locationX", not
+ *    naming which element. Auto-defaulted here (50/0, matching this project's own generator) rather
+ *    than just erroring — there's no ambiguity about what a safe default coordinate is.
+ * 3. A <variables> entry with <dataType>SObject</dataType> requires a sibling <objectType> or fails
+ *    naming the specific variable — already a good, specific error from Salesforce; replicated here
+ *    to catch it before a round-trip instead of after.
+ *
+ * Returns { errors, xml } — xml has locationX/locationY defaulted if that was the only issue; if
+ * errors is non-empty, the caller should stop and report them rather than deploy.
+ */
+export function validateAndNormalizeFlowXml(xml: string): { errors: string[]; xml: string } {
+  const errors: string[] = [];
+
+  // 1. Contiguity: tokenize direct children of the root element, tracking nesting depth. Comments
+  // and the XML declaration are stripped first so they can't be mistaken for tags.
+  const stripped = xml.replace(/<!--[\s\S]*?-->/g, "").replace(/<\?xml[^?]*\?>/, "");
+  const tagRe = /<\/?([A-Za-z_][\w.-]*)[^>]*?(\/?)>/g;
+  let depth = 0;
+  let match: RegExpExecArray | null;
+  const topLevelSequence: string[] = [];
+  while ((match = tagRe.exec(stripped)) !== null) {
+    const [full, name, selfClosingSlash] = match;
+    const isClosing = full.startsWith("</");
+    const isSelfClosing = selfClosingSlash === "/" || full.endsWith("/>");
+    if (isClosing) {
+      depth--;
+      continue;
+    }
+    if (depth === 1) topLevelSequence.push(name);
+    if (!isSelfClosing) depth++;
+  }
+  const seenGroups = new Map<string, number>(); // tag -> how many separate contiguous runs seen
+  let prevTag: string | null = null;
+  for (const tag of topLevelSequence) {
+    if (tag !== prevTag) {
+      seenGroups.set(tag, (seenGroups.get(tag) ?? 0) + 1);
+      prevTag = tag;
+    }
+  }
+  const nonContiguous = [...seenGroups.entries()].filter(([, runs]) => runs > 1).map(([tag]) => tag);
+  if (nonContiguous.length > 0) {
+    errors.push(`Element grouping: <${nonContiguous.join(">, <")}> appear(s) more than once, separated by a different element type in between. Salesforce requires every occurrence of the same top-level tag to be contiguous (grouped together), not interleaved in logical flow order — this deploys as "Element X is duplicated at this location in type Flow" if left as-is. Move all <${nonContiguous[0]}> elements next to each other.`);
+  }
+
+  // 2. <start> locationX/locationY — safe to default, not just flag.
+  let normalizedXml = xml;
+  const startMatch = normalizedXml.match(/<start>([\s\S]*?)<\/start>/);
+  if (startMatch && !/<locationX>/.test(startMatch[1])) {
+    normalizedXml = normalizedXml.replace(/<start>/, "<start>\n    <locationX>50</locationX>\n    <locationY>0</locationY>");
+  }
+
+  // 3. SObject variables require objectType — name the specific variable, matching Salesforce's own
+  // (already good) error style rather than a generic message.
+  const varRe = /<variables>([\s\S]*?)<\/variables>/g;
+  let vMatch: RegExpExecArray | null;
+  while ((vMatch = varRe.exec(normalizedXml)) !== null) {
+    const block = vMatch[1];
+    if (/<dataType>SObject<\/dataType>/.test(block) && !/<objectType>/.test(block)) {
+      const nameMatch = block.match(/<name>([^<]*)<\/name>/);
+      errors.push(`Variable '${nameMatch?.[1] ?? "(unnamed)"}' has dataType SObject but no <objectType> — required whenever dataType is SObject (e.g. <objectType>Account</objectType>).`);
+    }
+  }
+
+  return { errors, xml: normalizedXml };
 }
 
 function buildApprovalProcessXml(params: {
@@ -3947,7 +4040,24 @@ export async function createPublicGroup(auth: SalesforceAuth, params: Record<str
 export async function describeObject(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const client = createClient(auth);
-        const resp = await client.get<Record<string, any>>(`/sobjects/${params.objectApiName}/describe`);
+        const waitForFields: string[] = params.waitForFields ?? [];
+        const deadline = Date.now() + (params.timeoutSeconds ?? 60) * 1000;
+        let resp = await client.get<Record<string, any>>(`/sobjects/${params.objectApiName}/describe`);
+        let waited = 0;
+        // Not a client-side cache — every call here is a fresh HTTP request. This retries because
+        // Salesforce's OWN REST describe/SOQL schema cache can lag well behind what the Metadata API
+        // and Tooling API already report as deployed (confirmed live 2026-07-31: a field visible via
+        // Tooling API's CustomField/FieldDefinition, with a Metadata API deploy that reported success,
+        // remained invisible to this same describe endpoint for 10+ minutes on demo-org). There is no
+        // fix for that from this MCP server; this loop only automates the wait so callers don't have
+        // to poll by hand.
+        while (waitForFields.length > 0 && Date.now() < deadline) {
+            const names = new Set((resp.data.fields ?? []).map((f: any) => f.name));
+            if (waitForFields.every(f => names.has(f))) break;
+            await new Promise(r => setTimeout(r, 5000));
+            waited += 5;
+            resp = await client.get<Record<string, any>>(`/sobjects/${params.objectApiName}/describe`);
+        }
         const d = resp.data;
         const fields = (d.fields ?? []).map((f: any) => ({
             name: f.name,
@@ -3964,8 +4074,14 @@ export async function describeObject(auth: SalesforceAuth, params: Record<string
             referenceTo: f.referenceTo && f.referenceTo.length > 0 ? f.referenceTo : undefined,
             relationshipName: f.relationshipName ?? undefined,
         }));
+        const stillMissing = waitForFields.filter(f => !fields.some((ff: any) => ff.name === f));
+        const waitNote = waitForFields.length > 0
+            ? (stillMissing.length > 0
+                ? ` WARNING: waited ${waited}s for [${waitForFields.join(", ")}] but Salesforce's REST schema cache still does not show [${stillMissing.join(", ")}] — this is a Salesforce-side propagation delay, not a deploy failure (re-check sf_retrieve_metadata or the Tooling API if you need to confirm the field truly exists); try again later or raise timeoutSeconds.`
+                : waited > 0 ? ` (waited ${waited}s for [${waitForFields.join(", ")}] to appear.)` : "")
+            : "";
         if (params.fieldsOnly) {
-            return { success: true, objectApiName: d.name, label: d.label, fields, message: `${fields.length} field(s) on ${d.name}.` };
+            return { success: true, objectApiName: d.name, label: d.label, fields, message: `${fields.length} field(s) on ${d.name}.${waitNote}` };
         }
         const childRelationships = (d.childRelationships ?? [])
             .filter((cr: any) => cr.relationshipName)
@@ -3985,7 +4101,7 @@ export async function describeObject(auth: SalesforceAuth, params: Record<string
             fields,
             childRelationships,
             recordTypeInfos,
-            message: `Describe complete for ${d.name}: ${fields.length} field(s), ${childRelationships.length} child relationship(s), ${recordTypeInfos.length} record type(s).`,
+            message: `Describe complete for ${d.name}: ${fields.length} field(s), ${childRelationships.length} child relationship(s), ${recordTypeInfos.length} record type(s).${waitNote}`,
         };
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };

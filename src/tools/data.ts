@@ -81,7 +81,9 @@ Aggregate results come back as regular records with the aggregate expressions as
     description: `Retrieves schema metadata for a Salesforce object via the REST Describe API: fields (name, label, type, required, picklist values, length, references), child relationships, and record type info. Call this before querying or creating records on an unfamiliar object, or when a user asks what fields exist on an object.
 
 objectApiName: SObject API name, e.g. 'Account', 'My_Object__c'
-fieldsOnly: set true for a smaller/faster response with just the field list, omitting child relationships and record types`,
+fieldsOnly: set true for a smaller/faster response with just the field list, omitting child relationships and record types
+waitForFields: field API names to poll for after a sf_create_custom_field call — Salesforce's own REST describe/SOQL schema cache can lag several minutes behind the Metadata API on some orgs even though the field is fully deployed; this retries so you don't have to. Not caused by this MCP server and not fixable here — it's Salesforce-side.
+timeoutSeconds: max time to poll when waitForFields is set (default 60, max 300)`,
     inputSchema: DescribeObjectSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (params) => {

@@ -2,10 +2,15 @@
  * Comprehensive Flow QA — exercises sf_create_flow across every element type, resource type,
  * flow type, and guardrail, on BOTH XML builders.
  *
- * Why both builders: sf_create_flow calls buildFlowXml (SOAP/upsertMetadata), while
- * sf_create_flow_from_xml and the older suites call buildFlowDeployXml (ZIP/deploy). They are two
- * independent ~300-line generators. A bug fixed in one is not fixed in the other, and the v2.8.2
- * regression run validated only the ZIP path — which is why the processType defect reached users.
+ * CORRECTED 2026-07-31: the 'soap' path below (createFlow → buildFlowXml/upsertMetadata) is dead
+ * code — confirmed by grep that no tool file imports or calls createFlow. The live sf_create_flow
+ * tool (src/tools/metadata.ts) calls buildFlowDeployXml (ZIP/deploy) exclusively; sf_create_flow_from_
+ * xml takes the caller's own raw XML with no builder involved at all. This comment previously claimed
+ * sf_create_flow used the SOAP path — that was true at some earlier point and went stale as the tool
+ * wiring changed without this file being updated. Both builders are still exercised here (a real user
+ * bug, the Rule_N collision across multiple Decisions, was found and fixed in both this session), but
+ * only 'zip' results reflect what a real MCP tool call actually does today — treat 'soap' failures as
+ * lower priority than 'zip' failures, and don't assume a 'soap' pass means sf_create_flow works.
  *
  * Run: SF_ALIAS=demo-org SF_INSTANCE_URL=<org-url> node qa-flow-comprehensive.mjs
  */
@@ -268,6 +273,21 @@ await check('E', 'UpdateRecords inputReference+inputAssignments rejected', { lab
 await check('E', 'approval submit + action call contiguity', { label: 'QA E appr', apiName: `QA_EA_${TS}`, flowType: 'RecordTriggeredFlow', status: 'Draft',
   triggerObject: 'Opportunity', triggerType: 'RecordAfterSave', submitForApprovalProcessName: 'QA_Fake_Process',
   elements: [el({ type: 'ApexAction', name: 'AX', label: 'AX', apexClassName: 'QAFakeApex', apexMethodName: 'run' })] }, { expectFail: true });
+
+// Regression for a real user-reported bug (2026-07-31): two Decision elements deployed
+// "Duplicate developer name: Rule_1" because rule <name> was scoped per-decision (Rule_1, Rule_2, ...)
+// instead of globally unique across the flow. Fixed by namespacing with the parent decision's own
+// name. The second decision deliberately omits defaultConnector (relying on implicit fall-through) —
+// every pre-existing Decision test in this file sets defaultConnector explicitly, which is exactly
+// why a second, related bug (defaultConnectorLabel required unconditionally, not just when
+// defaultConnector is set) was never caught until real-world usage hit it.
+await check('E', 'two Decisions do not collide on rule names', { label: 'QA E twodec', apiName: `QA_2DEC_${TS}`, flowType: 'AutoLaunchedFlow', status: 'Draft',
+  variables: [strVar('V')],
+  elements: [
+    el({ type: 'Decision', name: 'Decision_One', label: 'Decision One', conditions: [{ leftValueRef: 'V', operator: 'EqualTo', rightValue: 'a', nextElement: 'A' }], defaultConnector: 'A' }),
+    el({ type: 'Decision', name: 'Decision_Two', label: 'Decision Two', conditions: [{ leftValueRef: 'V', operator: 'EqualTo', rightValue: 'b', nextElement: 'A' }] }),
+    el({ type: 'Assignment', name: 'A', label: 'A', assignments: [{ assignToRef: 'V', operator: 'Assign', value: 'x' }] }),
+  ] });
 
 // ─── F. Lifecycle ─────────────────────────────────────────────────────────────
 section('F. LIFECYCLE (activate / versions)');

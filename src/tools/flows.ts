@@ -10,6 +10,7 @@ import {
   activateFlow,
   deactivateFlow,
   listFlowVersions,
+  validateAndNormalizeFlowXml,
   API_VERSION,
 } from "../services/salesforce.js";
 import {
@@ -70,17 +71,21 @@ export function registerFlowManagementTools(server: McpServer): void {
     "sf_create_flow_from_xml",
     {
       title: "Deploy Flow from Raw XML",
-      description: `Deploys a Salesforce Flow directly from raw XML using the Metadata API zip deploy. Use this for complex flows that are too advanced for sf_create_flow's parameter-based builder — paste the full Flow XML and it deploys it directly. Optionally activates the flow after deployment. The flowXml must be a complete Flow metadata XML document.`,
+      description: `Deploys a Salesforce Flow directly from raw XML using the Metadata API zip deploy. Use this for complex flows that are too advanced for sf_create_flow's parameter-based builder — paste the full Flow XML and it deploys it directly. Optionally activates the flow after deployment. The flowXml must be a complete Flow metadata XML document. Pre-validates for 3 common, otherwise hard-to-diagnose schema errors before deploying: top-level elements of the same type must be contiguous (not interleaved), <start> locationX/locationY are auto-defaulted if missing, and SObject-typed variables must have objectType.`,
       inputSchema: CreateFlowFromXmlSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     async (params) => {
       const auth = await getAuth();
       try {
+        const { errors, xml: normalizedXml } = validateAndNormalizeFlowXml(params.flowXml);
+        if (errors.length > 0) {
+          return resultContent({ success: false, message: `Flow XML failed pre-deploy validation (fix these before deploying — none of this reached Salesforce):\n${errors.map((e, i) => `${i + 1}. ${e}`).join("\n")}` });
+        }
         const base64Zip = await buildGenericDeployZip(
           [],
           API_VERSION,
-          [{ type: "Flow", name: params.flowApiName, xml: params.flowXml }]
+          [{ type: "Flow", name: params.flowApiName, xml: normalizedXml }]
         );
         const deployId = await deployZip(auth, base64Zip, { rollbackOnError: true });
         const deployResult = await pollDeployStatus(auth, deployId, 10 * 60 * 1000);

@@ -13,6 +13,7 @@ import {
   getAuth,
   createCustomObject,
   createCustomField,
+  getFieldPermissions,
   addPicklistValues,
   activateFlow,
   buildFlowDeployXml,
@@ -110,6 +111,18 @@ export function registerMetadataTools(server: McpServer): void {
           : {}),
       };
       const result = await createCustomField(auth, meta);
+      // A newly created field has zero FLS grants by default (not this tool's doing — it's how
+      // Salesforce creates fields via the Metadata API) and is therefore invisible to every profile,
+      // including System Administrator, until sf_create_field_level_security is called separately.
+      // Nothing about a bare success response hinted this was needed — found from a real user report
+      // 2026-07-31 who spent a session debugging "field doesn't exist" errors that were actually FLS.
+      // Best-effort: if the FLS check itself fails, don't let that mask the real field-creation result.
+      if (result.success) {
+        const perms = await getFieldPermissions(auth, { objectName: params.objectName, fieldName: params.fieldName }).catch(() => null);
+        if (perms?.success && (perms.grants?.length ?? 0) === 0) {
+          return resultContent({ ...result, message: `${result.message ?? ""} WARNING: no FLS grants exist for this field yet — it will not appear in sf_describe_object, SOQL, or record create/update calls for ANY profile until you call sf_create_field_level_security.`.trim() });
+        }
+      }
       return resultContent(result);
     }
   );
