@@ -22,7 +22,7 @@ import {
   createPresenceStatus, assignPresenceStatus, createSkill, assignSkillToAgent,
   createServiceTerritory, createWorkType, createMessagingChannel,
   createChatButton, createEmbeddedService, createBotRouting,
-  getFieldHistory, sendEmail, createEinsteinBot, createUserRoleHierarchy,
+  getFieldHistory, sendEmail, createUserRoleHierarchy,
   resetUserPassword, freezeUser, assignTerritoryToUser, createForecastHierarchy,
   createETMTerritory, createPlatformEventTrigger, createFieldUpdate,
   checkCodeCoverage, createHoliday, createSamlSsoConfig,
@@ -30,8 +30,8 @@ import {
   createFlexCard, updateFlexCard, activateFlexCard, getFlexCard,
   createCalculationMatrix, createCalculationProcedure, createIntegrationProcedure,
   updateIntegrationProcedure, activateIntegrationProcedure, getIntegrationProcedure,
-  createSearchLayout, createDocumentGeneration, createAgent, createAgentTopic,
-  createExperienceSite, createEinsteinPrediction,
+  createSearchLayout, createDocumentGeneration,
+  createExperienceSite,
   exportOmniStudioComponent, importOmniStudioComponent,
   devOpsCreateWorkItem, devOpsPromoteWorkItem,
   detectDevOpsMergeConflict, checkDevOpsCommitStatus, promoteDevOpsWorkItem,
@@ -2214,73 +2214,18 @@ await test('sf_create_forecast_hierarchy', async () => {
 
 section('CATEGORY 45: Einstein & Agentforce');
 
-await test('sf_create_einstein_bot', async () => {
-  try {
-    return orgLimitFallback(await createEinsteinBot(auth, {
-      botName: `MCP_Bot_${TS}`,
-      label: `MCP Bot ${TS}`,
-      description: 'MCP test bot',
-      dialogs: [{ name: 'Welcome', label: 'Welcome', type: 'Main', isGoalStep: false, messages: ['Hello!'] }],
-    }));
-  } catch (e) {
-    return { success: true, message: `Einstein bot API reached (${e.message?.slice(0, 60)})` };
-  }
-});
-
-await test('sf_create_einstein_prediction', async () => {
-  try {
-    return orgLimitFallback(await createEinsteinPrediction(auth, {
-      predictionName: `MCP_Pred_${TS}`,
-      label: `MCP Prediction ${TS}`,
-      predictionType: 'BinaryClassification',
-      positiveLabel: 'Yes',
-      negativeLabel: 'No',
-    }));
-  } catch (e) {
-    return { success: true, message: `Einstein prediction API reached (${e.message?.slice(0, 60)})` };
-  }
-});
-
-await test('sf_create_agent', async () => {
-  try {
-    return orgLimitFallback(await createAgent(auth, {
-      agentName: `MCP_Agent_${TS}`,
-      label: `MCP Agent ${TS}`,
-      description: 'MCP test agent',
-      botType: 'EinsteinAgentBot',
-    }));
-  } catch (e) {
-    return { success: true, message: `Agent create API reached (${e.message?.slice(0, 60)})` };
-  }
-});
-
-await test('sf_create_agent_topic', async () => {
-  try {
-    return orgLimitFallback(await createAgentTopic(auth, {
-      agentApiName: `MCP_Agent_${TS}`,
-      topicName: `MCP_Topic_${TS}`,
-      label: `MCP Topic ${TS}`,
-      description: 'MCP test topic',
-    }));
-  } catch (e) {
-    return { success: true, message: `Agent topic API reached (${e.message?.slice(0, 60)})` };
-  }
-});
-
-await test('sf_create_agent_action', async () => {
-  try {
-    const r = await upsertMetadata(auth, `<met:metadata xsi:type="met:GenAiFunction" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <met:fullName>MCP_Agent_${TS}.MCP_Topic_${TS}.MCP_Action_${TS}</met:fullName>
-  <met:masterLabel>MCP Action ${TS}</met:masterLabel>
-  <met:description>MCP test action</met:description>
-  <met:type>FlowService</met:type>
-  <met:functionRef>NonExistentFlow</met:functionRef>
-</met:metadata>`);
-    return orgLimitFallback(r);
-  } catch (e) {
-    return { success: true, message: `Agent action API reached (${e.message?.slice(0, 60)})` };
-  }
-});
+// This category used to hold 5 tests here (einstein_bot, einstein_prediction, agent, agent_topic,
+// agent_action) that could never fail: each was wrapped in try/catch returning success:true, then
+// passed through orgLimitFallback (which also counts HTTP 500/404/NOT_FOUND as a pass). Worse, the
+// agent/agent_topic tests imported createAgent/createAgentTopic from services/salesforce.js, which
+// NO MCP tool calls — src/tools/agentforce.ts builds its own XML inline — so they exercised orphaned
+// code while the shipped tool handlers had zero coverage. The agent_action test hand-rolled its own
+// GenAiFunction XML with a `type`/`functionRef` shape that doesn't even match what the real tool
+// deploys (`invocationTarget`/`invocationTargetType`), aimed at a flow named 'NonExistentFlow' that
+// was never going to exist. Removed rather than patched: real, verified-against-a-live-org coverage
+// for all five tools (plus sf_create_agent_planner and sf_create_bot_routing/sf_assign_skill_to_agent,
+// which had no test anywhere before) now lives in qa-agentforce.mjs (47 checks) and
+// qa-agentforce-adjacent.mjs (11 checks) — run those for Agentforce/Einstein coverage instead.
 
 // ─── CATEGORY 46: Experience Cloud ───────────────────────────────────────────
 

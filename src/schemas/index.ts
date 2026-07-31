@@ -1018,7 +1018,7 @@ export const CreateAgentActionSchema = z.object({
   agentName: z.string().min(1).max(80).optional().describe("Parent agent API name — optional and informational only, NOT written to the action XML. Safe to omit."),
   topicName: z.string().min(1).max(80).optional().describe("Parent topic API name — optional and informational only, NOT written to the action XML. Safe to omit. You must still pass this action's API name (actionName) in the 'actions' array when calling sf_create_agent_topic."),
   actionName: z.string().min(1).max(80).regex(/^[A-Za-z][A-Za-z0-9_]*$/).describe("Action API name. Letters, numbers, underscores. Remember this name — you must pass it in the 'actions' array when calling sf_create_agent_topic."),
-  label: z.string().min(1).max(255).describe("Action label"),
+  label: z.string().min(1).max(255).optional().describe("Action label. Defaults to actionName if omitted."),
   description: z.string().min(1).max(5000).describe("What this action does — used by the AI to decide when to invoke it"),
   type: z.enum(["Flow", "ApexClass", "PromptTemplate", "DataCategoryGroup", "ExternalService"])
     .describe("Action type: 'Flow' (AutoLaunchedFlow only — must be Active), 'ApexClass' (must have @InvocableMethod), 'PromptTemplate', etc."),
@@ -1068,12 +1068,13 @@ export const CreateConnectedAppSchema = z.object({
   callbackUrls: z.array(z.string()).min(1).describe("OAuth callback URLs, e.g. ['https://myapp.com/oauth/callback']"),
   scopes: z.array(z.enum(["api", "web", "full", "chatter_api", "wave_api", "eclair_api",
     "visualforce", "content", "openid", "profile", "email", "address", "phone",
-    "offline_access", "custom_permissions", "pardot_api"]))
-    .min(1).describe("OAuth scopes to request"),
+    "offline_access", "custom_permissions", "pardot_api", "chatbot_api"]))
+    .min(1).describe("OAuth scopes to request. Use 'chatbot_api' (deploys as the metadata literal 'Chatbot', verified against a live org 2026-07-31) for any external client calling a Salesforce bot/Agentforce agent — without it, Agent API calls using this app's tokens are rejected regardless of the agent's own state."),
   consumerKey: z.string().optional().describe("Custom consumer key (auto-generated if not specified)"),
   startUrl: z.string().optional().describe("Default start URL after OAuth"),
   accessTokenValidity: z.number().int().optional().describe("Access token validity in minutes"),
   refreshTokenValidity: z.number().int().optional().describe("Refresh token validity in minutes"),
+  enableClientCredentialsFlow: z.boolean().optional().describe("Sets isClientCredentialEnabled/isAdminApproved on the deployed ConnectedApp (verified accepted by Metadata API 2026-07-31). NOTE: Salesforce still requires an admin to open Setup → App Manager → Edit Policies and pick the 'Run As' user for Client Credentials Flow, and the Consumer Secret can only ever be viewed/copied from that same Setup UI — neither is exposed by any API. This flag alone does not make the flow usable."),
 }).strict();
 
 export const CreateExternalDataSourceSchema = z.object({

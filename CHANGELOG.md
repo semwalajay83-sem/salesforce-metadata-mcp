@@ -1,5 +1,114 @@
 # Changelog
 
+## [2.8.6] - 2026-07-31
+
+### Fixed — `sf_create_connected_app` could never successfully grant any OAuth scope
+
+Asked to prove an Agentforce agent can hold a live conversation, the trail led to the connected app
+required for the Agent API's client-credentials flow — and that tool turned out to be broken end to
+end, independent of anything Agentforce-specific. Every scope value in the schema (`api`, `web`,
+`chatter_api`, `offline_access`, ...) is lowercase snake_case, matching the OAuth2 `scope`
+query-parameter convention developers know. The `ConnectedApp` Metadata API's scope enum
+(`ConnectedAppOauthAccessScope`) is a completely different, undocumented set of PascalCase literals
+that has no relationship to that convention — `'api' is not a valid value for the enum
+'ConnectedAppOauthAccessScope'`. Every one of the tool's own scope values was therefore guaranteed to
+fail deployment, 100% of the time, for every caller who ever used it. Fixed with a mapping table where
+each entry was individually verified by deploying it against a live org and reading Salesforce's own
+accept/reject response — not guessed from docs: `api`→`Api`, `web`→`Web`, `full`→`Full`,
+`chatter_api`→`Chatter`, `wave_api`→`Wave`, `eclair_api`→`Eclair`, `content`→`Content`,
+`openid`→`OpenID`, `profile`→`Profile`, `email`→`Email`, `address`→`Address`, `phone`→`Phone`,
+`offline_access`→`RefreshToken`, `custom_permissions`→`CustomPermissions`, `pardot_api`→`Pardot`.
+Also added `chatbot_api`→`Chatbot` (verified live) — needed by any external caller of a Salesforce
+bot/Agentforce agent, previously missing from the enum entirely. `visualforce` has **no** confirmed
+working literal — `Visualforce`, `VisualForce`, `Vf`, and `ViewVisualforce` were all tried and
+rejected; it is passed through unmapped and documented as a known open gap rather than guessed.
+
+Also added `enableClientCredentialsFlow`, which sets `isClientCredentialEnabled`/`isAdminApproved` on
+the deployed app (both verified accepted by the Metadata API). This does **not** make Client
+Credentials Flow usable by itself: Salesforce still requires a human in Setup → App Manager → Edit
+Policies to pick the flow's "Run As" user, and the Consumer Secret can only ever be viewed/copied from
+that same Setup UI — neither is exposed by any API, Connect resource, or Tooling endpoint found during
+a deliberate search. The tool's success message now says this explicitly instead of implying the app
+is ready to use.
+
+### Fixed — `sf_create_agent_action`'s `label` parameter was required but the code already treated it as optional
+
+The handler has always used `params.label ?? params.actionName` as a fallback, but the zod schema
+marked `label` as required — so the fallback code was dead and every caller who reasonably omitted a
+redundant label got a hard validation rejection. Schema now matches the code's actual behavior.
+
+### Fixed — `activateAgent`/`deactivateAgent` claimed success on total failure
+
+Not wired to any MCP tool (dead code, found during this session), but worth fixing since it embodies a
+pattern already flagged elsewhere in this codebase: its final fallback returned `success: true` even
+when every attempt inside the function had failed. Verified live: the `/connect/einstein/copilot/
+{name}/activate` Connect resource 404s ("resource does not exist"), and both `BotDefinition.Status`
+and `BotVersion.Status` are read-only via REST ("No such column" / "Unable to create/update fields:
+Status... check security settings" — Salesforce's own read-only-field wording, not a permissions gap).
+No working programmatic activation path was found despite testing roughly ten REST/Connect/Tooling
+endpoint candidates. The function now reports failure honestly instead of guessing success; Agent
+activation (Setup → Agent Builder → Activate) appears to be Setup-UI-only as of API v66.0.
+
+### Fixed — `test-suite.mjs` had 5 Agentforce/Einstein tests that could never fail (not 3, as
+### previously scoped)
+
+`sf_create_einstein_bot`, `sf_create_einstein_prediction`, `sf_create_agent`, `sf_create_agent_topic`,
+and `sf_create_agent_action` were each wrapped in try/catch returning `success: true`, then passed
+through `orgLimitFallback` (which also counts HTTP 500/404/NOT_FOUND as a pass). The agent/topic tests
+imported `createAgent`/`createAgentTopic` from `services/salesforce.js`, which no MCP tool calls —
+`src/tools/agentforce.ts` builds its own XML inline — so they exercised orphaned code while the shipped
+handlers had zero coverage from this suite. The action test hand-rolled `GenAiFunction` XML with a
+`type`/`functionRef` shape that doesn't match what the real tool deploys
+(`invocationTarget`/`invocationTargetType`), aimed at a flow named `NonExistentFlow`. All five removed;
+real, live-org-verified coverage for these five tools plus `sf_create_agent_planner`,
+`sf_create_bot_routing`, and `sf_assign_skill_to_agent` (none of which had any test before) lives in
+`qa-agentforce.mjs` (47 checks) and `qa-agentforce-adjacent.mjs` (11 checks). `test-suite.mjs` is now
+210 tests (was 215); re-run against `demo-org` after the changes above: 206 passed, 3 failed (all
+pre-existing and unrelated — `sf_share_report_folder` field-length validation,
+`sf_delete_scratch_org`/`sf_install_package` both probing intentionally-nonexistent targets), 1 skipped.
+
+### Investigated — the Agentforce conversation test is still unproven, now for precisely two reasons
+
+Went further than any previous session on both blockers named in the last release:
+
+**Custom agent actions (`GenAiFunction`) are conclusively an org licensing ceiling, not a code
+defect.** Beyond re-confirming every `invocationTargetType` is still rejected against a fresh
+confirmed-Active flow, this session found and tried the specific fix: `demo-org` has two relevant
+Permission Set Licenses sitting unused (`Agentforce Service Agent User` — 200 seats, 0 assigned;
+`Agent platform builder` — 5 seats, 0 assigned). Assigning `Agent Platform Builder`'s permission set
+succeeded but changed nothing. Assigning the one that actually gates this
+(`AgentforceServiceAgentUser`, and its `AgentforceServiceAgentBase` companion) was rejected outright by
+Salesforce: *"Ajay Semwal can't be assigned the Agentforce Service Agent User permission set license,
+because Ajay Semwal's user license doesn't support it."* That's a base User License / edition ceiling,
+not a permission set gap — nothing reachable from this MCP server's tools can change it.
+
+**A live conversation turn needs a Setup UI session, and none exists in this MCP server by design.**
+The Agent API requires an ACTIVE agent and a connected app's Consumer Key/Secret. Both dead ends above
+converge here: agent activation has no API path (see the `activateAgent` fix above), and Consumer
+Secret can only be viewed once from Setup → App Manager, never via any API. Getting either therefore
+requires a human (or a browser-automation session with its own explicit device-confirmation step) in
+Salesforce Setup — outside what a stdio metadata MCP server does. Recorded as a precise, actionable
+handoff rather than an unexplained skip.
+
+**Also tried and reverted:** attempting to pre-stage a working connected app for that eventual Setup UI
+session surfaced a third, unresolved anomaly — connected apps created via `upsertMetadata` (Salesforce's
+own SOAP response says `success: true`) became unretrievable via `readMetadata`/`listMetadataType`/SOQL
+within roughly 10–20 minutes, while apps checked within seconds of creation persisted and deleted
+cleanly. Root cause not identified (not a scope-literal issue — reproduced with the corrected literals
+above). Flagged for follow-up, not fixed; treat any connected app in `demo-org` as unverified until
+checked shortly after creation.
+
+**QA housekeeping:** cascade-deleted 15 of the 22 leftover `QA*`-prefixed Agentforce agents (plus their
+topics/planners/actions) accumulated across this and prior sessions, via the previously-unwired
+`deleteAgent` service function. 8 remain — Salesforce's Metadata API delete rejects them with a generic
+internal-server error (`ErrorId ...`, not an application-level error), on both batch and individual
+retry; not something a client-side retry fixes. Today's own flow/Apex test artifacts were left in place
+(flows are Active and must be deactivated before delete; Apex class deletion via this org's Metadata
+API delete path is rejected as "not available for this organization") — low-risk, consistent with this
+project's existing no-teardown QA methodology. The broader "few hundred QA artifacts, no teardown
+suite" backlog noted previously is real, unaddressed, and grew further from this session's full
+`test-suite.mjs` run (required to confirm no regressions) — still a separate, unstarted engineering task.
+
 ## [2.8.5] - 2026-07-30
 
 ### Fixed — 8 more bugs, from widening Agentforce QA past the four headline tools

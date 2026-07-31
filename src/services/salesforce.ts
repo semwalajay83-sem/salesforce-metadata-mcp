@@ -1997,14 +1997,33 @@ function buildReportTypeXml(params: {
   </met:metadata>`;
 }
 
+// The tool's public scope names (snake_case, matching the OAuth2 `scope` query-param convention
+// callers already know) are NOT the literals the ConnectedApp Metadata API enum
+// (ConnectedAppOauthAccessScope) accepts — that enum is separate, undocumented PascalCase, and
+// rejects lowercase/snake_case outright ("'api' is not a valid value for the enum
+// 'ConnectedAppOauthAccessScope'"). Before this map existed every scope in the schema deployed
+// broken 100% of the time — sf_create_connected_app could never actually grant any OAuth scope.
+// Each mapping below was verified individually against a live org (2026-07-31) by deploying it and
+// reading Salesforce's own accept/reject response, not guessed from docs. 'visualforce' has no
+// confirmed working literal — every plausible candidate tried (Visualforce, VisualForce, Vf,
+// ViewVisualforce) was rejected, so it is passed through unmapped and will still fail; that is a
+// known open gap, not a silent guess.
+const CONNECTED_APP_SCOPE_XML: Record<string, string> = {
+  api: "Api", web: "Web", full: "Full", chatter_api: "Chatter", wave_api: "Wave",
+  eclair_api: "Eclair", content: "Content", openid: "OpenID", profile: "Profile",
+  email: "Email", address: "Address", phone: "Phone", offline_access: "RefreshToken",
+  custom_permissions: "CustomPermissions", pardot_api: "Pardot", chatbot_api: "Chatbot",
+};
+
 function buildConnectedAppXml(params: {
   fullName: string; label: string; description?: string;
   contactEmail: string; callbackUrls: string[]; scopes: string[];
   consumerKey?: string; startUrl?: string;
   accessTokenValidity?: number; refreshTokenValidity?: number;
+  enableClientCredentialsFlow?: boolean;
 }): string {
   const callbacksXml = params.callbackUrls.map(u => `<met:callbackUrl>${x(u)}</met:callbackUrl>`).join("\n");
-  const scopesXml = params.scopes.map(s => `<met:scopes>${x(s)}</met:scopes>`).join("\n");
+  const scopesXml = params.scopes.map(s => `<met:scopes>${x(CONNECTED_APP_SCOPE_XML[s] ?? s)}</met:scopes>`).join("\n");
   return `<met:metadata xsi:type="met:ConnectedApp" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.fullName)}</met:fullName>
     <met:label>${x(params.label)}</met:label>
@@ -2015,6 +2034,7 @@ function buildConnectedAppXml(params: {
       ${scopesXml}
       ${params.consumerKey ? `<met:consumerKey>${x(params.consumerKey)}</met:consumerKey>` : ""}
       ${params.startUrl ? `<met:startUrl>${x(params.startUrl)}</met:startUrl>` : ""}
+      ${params.enableClientCredentialsFlow ? `<met:isClientCredentialEnabled>true</met:isClientCredentialEnabled>\n      <met:isAdminApproved>true</met:isAdminApproved>` : ""}
     </met:oauthConfig>
   </met:metadata>`;
 }
@@ -2663,22 +2683,21 @@ export async function deactivateAgent(auth: SalesforceAuth, agentApiName: string
     return _setBotStatus(auth, agentApiName, "Inactive");
 }
 async function _setBotStatus(auth: SalesforceAuth, agentApiName: string, status: string): Promise<any> {
+    // NOT WIRED TO ANY MCP TOOL (dead code, discovered during 2026-07-31 QA). Verified live against
+    // demo-org: the /connect/einstein/copilot/{name}/activate path 404s ("resource does not exist" —
+    // that Connect resource does not exist for Agentforce agents), and BotDefinition.Status/BotVersion
+    // .Status are both read-only via REST ("No such column" / "Unable to create/update fields: Status
+    // ... check security settings" — the latter is Salesforce's own read-only-field wording, not a
+    // permissions gap). No working programmatic activation path was found; Setup → Agent Builder →
+    // Activate appears to be UI-only. This function previously returned success:true from the final
+    // fallback even when both attempts above failed — the same "claims success it never verified"
+    // pattern flagged elsewhere in this codebase. Fixed to report the real state instead of guessing.
     try {
         const headers = { "Authorization": `Bearer ${auth.accessToken}`, "Content-Type": "application/json" };
         const base = `${auth.instanceUrl}/services/data/v${API_VERSION}`;
         const connectResp = await fetchWithTimeout(`${base}/connect/einstein/copilot/${agentApiName}/${status === "Active" ? "activate" : "deactivate"}`, { method: "POST", headers }, 15_000).catch(() => null);
         if ((connectResp as any)?.ok) return { success: true, message: `Agent '${agentApiName}' ${status === "Active" ? "activated" : "deactivated"} successfully.` };
-        const qResp = await fetchWithTimeout(`${base}/query?q=${encodeURIComponent(`SELECT Id FROM BotDefinition WHERE DeveloperName = '${agentApiName.replace(/'/g, "\\'")}'`)}`, { method: "GET", headers }, 15_000).catch(() => null);
-        if ((qResp as any)?.ok) {
-            const qData = await (qResp as any).json().catch(() => ({}));
-            const botId = qData.records?.[0]?.Id;
-            if (botId) {
-                const pResp = await fetchWithTimeout(`${base}/sobjects/BotDefinition/${botId}`, { method: "PATCH", headers, body: JSON.stringify({ Status: status }) }, 30_000).catch(() => null);
-                if ((pResp as any)?.ok || (pResp as any)?.status === 204)
-                    return { success: true, message: `Agent '${agentApiName}' ${status === "Active" ? "activated" : "deactivated"} successfully.` };
-            }
-        }
-        return { success: true, message: `Agent '${agentApiName}' ${status === "Active" ? "activation" : "deactivation"} requested. Complete activation in Setup → Agents.` };
+        return { success: false, message: `No working API path found to ${status === "Active" ? "activate" : "deactivate"} agent '${agentApiName}'. Agent activation is a Setup UI action (Setup → Agents → Agent Builder → Activate) — Salesforce does not expose it via REST, Connect, or the Metadata API as of API v${API_VERSION}.` };
     }
     catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };

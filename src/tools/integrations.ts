@@ -39,7 +39,11 @@ export function registerIntegrationTools(server: McpServer): void {
         startUrl: params.startUrl,
         accessTokenValidity: params.accessTokenValidity,
         refreshTokenValidity: params.refreshTokenValidity,
+        enableClientCredentialsFlow: params.enableClientCredentialsFlow,
       });
+      if (result.success) {
+        return resultContent({ ...result, message: `${result.message ?? ""} Consumer Key/Secret and the Client Credentials Flow 'Run As' user can ONLY be viewed/set in Setup → App Manager → ${params.fullName} — no API exposes the Consumer Secret or the Run As user picker, by Salesforce design.`.trim() });
+      }
       return resultContent(result);
     }
   );
