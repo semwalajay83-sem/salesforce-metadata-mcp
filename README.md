@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io)
 
-**The only Salesforce MCP server that builds Agentforce agents, OmniStudio components, and DevOps Center pipelines** — alongside a complete daily developer loop (schema describe, Apex read, debug logs) and 221 tools total for building, configuring, and automating Salesforce orgs directly from Claude or any MCP client.
+**The only Salesforce MCP server that builds Agentforce agents, OmniStudio components, and DevOps Center pipelines** — alongside a complete daily developer loop (schema describe, Apex read, debug logs) and 222 tools total for building, configuring, and automating Salesforce orgs directly from Claude or any MCP client.
 
 ---
 
@@ -47,7 +47,7 @@ See [SETUP.md](SETUP.md) for all authentication methods and detailed setup instr
 
 ---
 
-## Tools — 221 total
+## Tools — 222 total
 
 Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with parameters and example prompts.
 
@@ -149,6 +149,7 @@ Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with param
 | Tool | Description |
 |------|-------------|
 | `sf_create_connected_app` | Create OAuth Connected Apps |
+| `sf_create_external_client_app` | Create External Client Apps (OAuth) — Salesforce's newer replacement for Connected Apps; Client Credentials Flow (incl. Run As user) is API-settable here, unlike Connected Apps |
 | `sf_create_external_data_source` | Create External Data Sources for Connect |
 | `sf_create_external_object` | Create External Objects (__x) |
 | `sf_create_remote_site_setting` | Whitelist external URLs for callouts |
@@ -209,7 +210,7 @@ Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with param
 ## Documentation
 
 - [SETUP.md](SETUP.md) — Prerequisites, authentication, Claude configuration
-- [TOOLS.md](TOOLS.md) — All 221 tools with full parameter documentation
+- [TOOLS.md](TOOLS.md) — All 222 tools with full parameter documentation
 - [AGENTFORCE.md](AGENTFORCE.md) — Agentforce agent creation guide
 - [APEX_LWC.md](APEX_LWC.md) — Apex and LWC development guide
 - [CHANGELOG.md](CHANGELOG.md) — Version history

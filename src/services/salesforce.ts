@@ -2557,6 +2557,62 @@ export async function createReportType(auth: SalesforceAuth, params: Parameters<
 export async function createConnectedApp(auth: SalesforceAuth, params: Parameters<typeof buildConnectedAppXml>[0]): Promise<ToolResult> {
   return upsertMetadata(auth, buildConnectedAppXml(params));
 }
+
+// External Client Apps decompose into 3 independent metadata types, each deployed with its own
+// upsertMetadata call (all three accept the same simple SOAP upsert ConnectedApp uses — no ZIP
+// deploy needed, verified live 2026-07-31). All 3 field sets below — including the exact scope enum,
+// which Salesforce's own metadata reference page does not list — were discovered by deploying
+// deliberately-invalid values and reading Salesforce's rejection messages, then confirmed by
+// deploying the corrected values and reading the records back.
+function buildExternalClientApplicationXml(params: { fullName: string; label: string; description?: string; contactEmail: string }): string {
+  return `<met:metadata xsi:type="met:ExternalClientApplication" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <met:fullName>${x(params.fullName)}</met:fullName>
+    <met:label>${x(params.label)}</met:label>
+    ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+    <met:contactEmail>${x(params.contactEmail)}</met:contactEmail>
+    <met:distributionState>Local</met:distributionState>
+    <met:isProtected>false</met:isProtected>
+  </met:metadata>`;
+}
+function buildExtlClntAppOauthSettingsXml(params: { fullName: string; scopes: string[] }): string {
+  return `<met:metadata xsi:type="met:ExtlClntAppOauthSettings" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <met:fullName>${x(params.fullName)}</met:fullName>
+    <met:externalClientApplication>${x(params.fullName)}</met:externalClientApplication>
+    <met:commaSeparatedOauthScopes>${x(params.scopes.join(","))}</met:commaSeparatedOauthScopes>
+  </met:metadata>`;
+}
+function buildExtlClntAppOauthConfigurablePoliciesXml(params: {
+  fullName: string; enableClientCredentialsFlow?: boolean; clientCredentialsFlowUser?: string;
+  permittedUsersPolicyType?: string; ipRelaxationPolicyType?: string; refreshTokenPolicyType?: string;
+}): string {
+  return `<met:metadata xsi:type="met:ExtlClntAppOauthConfigurablePolicies" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <met:fullName>${x(params.fullName)}</met:fullName>
+    <met:externalClientApplication>${x(params.fullName)}</met:externalClientApplication>
+    ${params.enableClientCredentialsFlow ? `<met:isClientCredentialsFlowEnabled>true</met:isClientCredentialsFlowEnabled>` : ""}
+    ${params.clientCredentialsFlowUser ? `<met:clientCredentialsFlowUser>${x(params.clientCredentialsFlowUser)}</met:clientCredentialsFlowUser>` : ""}
+    ${params.permittedUsersPolicyType ? `<met:permittedUsersPolicyType>${x(params.permittedUsersPolicyType)}</met:permittedUsersPolicyType>` : ""}
+    ${params.ipRelaxationPolicyType ? `<met:ipRelaxationPolicyType>${x(params.ipRelaxationPolicyType)}</met:ipRelaxationPolicyType>` : ""}
+    ${params.refreshTokenPolicyType ? `<met:refreshTokenPolicyType>${x(params.refreshTokenPolicyType)}</met:refreshTokenPolicyType>` : ""}
+  </met:metadata>`;
+}
+export async function createExternalClientApp(auth: SalesforceAuth, params: {
+  fullName: string; label: string; description?: string; contactEmail: string; scopes: string[];
+  enableClientCredentialsFlow?: boolean; clientCredentialsFlowUser?: string;
+  permittedUsersPolicyType?: string; ipRelaxationPolicyType?: string; refreshTokenPolicyType?: string;
+}): Promise<ToolResult> {
+  const appResult = await upsertMetadata(auth, buildExternalClientApplicationXml(params));
+  if (!appResult.success) return { ...appResult, message: `ExternalClientApplication deployment failed: ${appResult.message}` };
+  const scopesResult = await upsertMetadata(auth, buildExtlClntAppOauthSettingsXml(params));
+  if (!scopesResult.success) return { ...scopesResult, message: `App shell '${params.fullName}' created, but OAuth scopes failed to deploy: ${scopesResult.message}` };
+  if (params.enableClientCredentialsFlow || params.permittedUsersPolicyType || params.ipRelaxationPolicyType || params.refreshTokenPolicyType) {
+    const policyResult = await upsertMetadata(auth, buildExtlClntAppOauthConfigurablePoliciesXml(params));
+    if (!policyResult.success) return { ...policyResult, message: `App '${params.fullName}' and its OAuth scopes deployed, but the OAuth policy (client credentials/IP/refresh settings) failed to deploy: ${policyResult.message}` };
+  }
+  return {
+    success: true, fullName: params.fullName, created: true,
+    message: `External Client App '${params.fullName}' created with scopes [${params.scopes.join(", ")}]${params.enableClientCredentialsFlow ? ` and Client Credentials Flow enabled${params.clientCredentialsFlowUser ? ` (running as '${params.clientCredentialsFlowUser}')` : ""}` : ""}. Consumer Key/Secret can ONLY be viewed in Setup → External Client Apps → ${params.fullName} → Settings → OAuth Settings — no API exposes the Consumer Secret, for this app type or Connected Apps, by Salesforce design.`,
+  };
+}
 export async function createExternalDataSource(auth: SalesforceAuth, params: Parameters<typeof buildExternalDataSourceXml>[0]): Promise<ToolResult> {
   return upsertMetadata(auth, buildExternalDataSourceXml(params));
 }

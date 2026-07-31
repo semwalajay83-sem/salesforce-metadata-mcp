@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   CreateConnectedAppSchema,
+  CreateExternalClientAppSchema,
   CreateExternalDataSourceSchema,
   CreateExternalObjectSchema,
   CreateRemoteSiteSettingSchema,
@@ -9,6 +10,7 @@ import {
 import {
   getAuth,
   createConnectedApp,
+  createExternalClientApp,
   createExternalDataSource,
   createExternalObject,
   createRemoteSiteSetting,
@@ -42,8 +44,34 @@ export function registerIntegrationTools(server: McpServer): void {
         enableClientCredentialsFlow: params.enableClientCredentialsFlow,
       });
       if (result.success) {
-        return resultContent({ ...result, message: `${result.message ?? ""} Consumer Key/Secret and the Client Credentials Flow 'Run As' user can ONLY be viewed/set in Setup → App Manager → ${params.fullName} — no API exposes the Consumer Secret or the Run As user picker, by Salesforce design.`.trim() });
+        return resultContent({ ...result, message: `${result.message ?? ""} Consumer Key/Secret and the Client Credentials Flow 'Run As' user can ONLY be viewed/set in Setup → App Manager → ${params.fullName} — no API exposes the Consumer Secret or the Run As user picker, by Salesforce design. Consider sf_create_external_client_app instead: its Run As user IS settable via this API.`.trim() });
       }
+      return resultContent(result);
+    }
+  );
+
+  server.registerTool(
+    "sf_create_external_client_app",
+    {
+      title: "Create External Client App (OAuth) — recommended over Connected App",
+      description: `Creates an External Client App (ECA), Salesforce's newer replacement for Connected Apps, for OAuth authentication and server-to-server integrations. Prefer this over sf_create_connected_app: on ECAs, Client Credentials Flow — including which user it runs as — is fully configurable via this tool (enableClientCredentialsFlow + clientCredentialsFlowUser), whereas on classic Connected Apps that same setting can only be picked in Setup UI. Deploys all 3 underlying metadata records (ExternalClientApplication, ExtlClntAppOauthSettings, ExtlClntAppOauthConfigurablePolicies) in one call. Use 'Chatbot' and/or 'SFApiPlatform' scopes for any app that needs to call the Salesforce Agent API (e.g. testing an Agentforce agent's conversation flow) or a bot's Messaging API. NOTE: the Consumer Key/Secret this app needs to actually mint a token can still only be viewed once in Setup → External Client Apps → [name] → Settings → OAuth Settings — no Salesforce API exposes it, for either app type.`,
+      inputSchema: CreateExternalClientAppSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async (params) => {
+      const auth = await getAuth();
+      const result = await createExternalClientApp(auth, {
+        fullName: params.fullName,
+        label: params.label,
+        description: params.description,
+        contactEmail: params.contactEmail,
+        scopes: params.scopes,
+        enableClientCredentialsFlow: params.enableClientCredentialsFlow,
+        clientCredentialsFlowUser: params.clientCredentialsFlowUser,
+        permittedUsersPolicyType: params.permittedUsersPolicyType,
+        ipRelaxationPolicyType: params.ipRelaxationPolicyType,
+        refreshTokenPolicyType: params.refreshTokenPolicyType,
+      });
       return resultContent(result);
     }
   );

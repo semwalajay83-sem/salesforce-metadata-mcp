@@ -14,7 +14,7 @@ import {
   createSharingRule, createFieldDependency,
   // CATEGORY 32+: Additional service functions
   createAssignmentRule, createAutoResponseRule, createDuplicateRule,
-  createQueue, createLightningApp, createTab, createConnectedApp,
+  createQueue, createLightningApp, createTab, createConnectedApp, createExternalClientApp,
   createExternalObject, createCspSetting, createPermissionSetGroup,
   updateDashboard, shareReportFolder, createUser, updateUser,
   createPublicGroup, bulkImportRecords, bulkUpdateRecords, bulkDeleteRecords,
@@ -1574,16 +1574,35 @@ await test('sf_create_lightning_app', async () => {
 });
 
 await test('sf_create_connected_app', async () => {
-  try {
-    return orgLimitFallback(await createConnectedApp(auth, {
-      appName: `MCP_CA_${TS}`,
-      label: `MCP Connected App ${TS}`,
-      contactEmail: `mcp@example.com`,
-      description: 'Test connected app',
-    }));
-  } catch (e) {
-    return { success: true, message: `Connected app API reached (${e.message?.slice(0, 60)})` };
-  }
+  // Previously called with appName (wrong key — real param is fullName) and no callbackUrls/scopes
+  // (both required), so it always threw inside the try and passed via the fake success:true catch —
+  // it never actually deployed anything. That's how the scope-literal bug (fixed 2026-07-31, see
+  // CHANGELOG v2.8.6) went undetected: this was the only regression test for this tool, and it never
+  // ran the real code path. Now uses real required params with scope literals verified against a
+  // live org.
+  const r = await createConnectedApp(auth, {
+    fullName: `MCP_CA_${TS}`,
+    label: `MCP Connected App ${TS}`,
+    contactEmail: `mcp@example.com`,
+    description: 'Test connected app',
+    callbackUrls: ['https://login.salesforce.com/services/oauth2/callback'],
+    scopes: ['api', 'chatbot_api', 'offline_access'],
+  });
+  return orgLimitFallback(r);
+});
+
+await test('sf_create_external_client_app', async () => {
+  const me = await queryRecords(auth, { soql: 'SELECT Username FROM User WHERE IsActive = true LIMIT 1' });
+  const r = await createExternalClientApp(auth, {
+    fullName: `MCP_ECA_${TS}`,
+    label: `MCP External Client App ${TS}`,
+    contactEmail: `mcp@example.com`,
+    description: 'Test external client app',
+    scopes: ['Api', 'Chatbot', 'RefreshToken'],
+    enableClientCredentialsFlow: true,
+    clientCredentialsFlowUser: me.records?.[0]?.Username,
+  });
+  return orgLimitFallback(r);
 });
 
 await test('sf_create_connected_app_oauth_policy', async () => {

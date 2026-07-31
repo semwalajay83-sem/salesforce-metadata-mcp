@@ -1074,7 +1074,31 @@ export const CreateConnectedAppSchema = z.object({
   startUrl: z.string().optional().describe("Default start URL after OAuth"),
   accessTokenValidity: z.number().int().optional().describe("Access token validity in minutes"),
   refreshTokenValidity: z.number().int().optional().describe("Refresh token validity in minutes"),
-  enableClientCredentialsFlow: z.boolean().optional().describe("Sets isClientCredentialEnabled/isAdminApproved on the deployed ConnectedApp (verified accepted by Metadata API 2026-07-31). NOTE: Salesforce still requires an admin to open Setup → App Manager → Edit Policies and pick the 'Run As' user for Client Credentials Flow, and the Consumer Secret can only ever be viewed/copied from that same Setup UI — neither is exposed by any API. This flag alone does not make the flow usable."),
+  enableClientCredentialsFlow: z.boolean().optional().describe("Sets isClientCredentialEnabled/isAdminApproved on the deployed ConnectedApp (verified accepted by Metadata API 2026-07-31). NOTE: Salesforce still requires an admin to open Setup → App Manager → Edit Policies and pick the 'Run As' user for Client Credentials Flow, and the Consumer Secret can only ever be viewed/copied from that same Setup UI — neither is exposed by any API. This flag alone does not make the flow usable. PREFER sf_create_external_client_app instead: on External Client Apps, Client Credentials Flow (including its 'Run As' user) IS fully settable via the Metadata API — only the Consumer Secret still requires a one-time Setup UI visit, for either app type."),
+}).strict();
+
+// External Client Apps (ECA) are Salesforce's newer replacement for Connected Apps (GA'd ~API v59+,
+// increasingly the recommended path). Unlike ConnectedApp, its Client Credentials Flow — including
+// picking the 'Run As' user — IS settable via the Metadata API, verified live 2026-07-31. The full
+// scope enum below (type ExtlClntAppOauthScope) came directly from Salesforce's own rejection message
+// when probing with an invalid scope, not from docs — the metadata reference page doesn't enumerate it.
+export const CreateExternalClientAppSchema = z.object({
+  fullName: z.string().min(1).regex(/^[A-Za-z][A-Za-z0-9_]*$/).describe("External Client App API name, e.g. 'My_External_App'. Used for all three underlying metadata records (ExternalClientApplication, ExtlClntAppOauthSettings, ExtlClntAppOauthConfigurablePolicies) — this tool creates all three in one call."),
+  label: z.string().min(1).describe("Display label"),
+  description: z.string().optional().describe("Description"),
+  contactEmail: z.string().email().describe("Contact email for the app"),
+  scopes: z.array(z.enum(["Basic", "OfflineAccess", "DataCloudUserClaims", "Email", "Address",
+    "CDPSegment", "Chatbot", "CustomApplications", "Full", "Profile", "CDP", "CDPProfile",
+    "RefreshToken", "Phone", "PwdlessLogin", "Interaction", "Pardot", "CDPIngest",
+    "CDPIdentityResolution", "CustomPermissions", "ForgotPassword", "UserRegistration", "OpenID",
+    "Chatter", "Wave", "SFApiPlatform", "SCRT", "Web", "EinsteinGPT", "Lightning", "Content",
+    "CDPCalculatedInsight", "Eclair", "Api", "MCP", "CDPQuery"]))
+    .min(1).describe("OAuth scopes to request, using Salesforce's exact enum literals (PascalCase — this is the ExtlClntAppOauthSettings.commaSeparatedOauthScopes enum, unrelated to the lowercase OAuth2 scope-string convention). 'Chatbot' and/or 'SFApiPlatform' are what an Agent API caller needs. 'Api' covers general REST/SOQL access. 'RefreshToken' is required for any non-client-credentials flow to get a refresh token."),
+  enableClientCredentialsFlow: z.boolean().optional().describe("Sets isClientCredentialsFlowEnabled=true on ExtlClntAppOauthConfigurablePolicies."),
+  clientCredentialsFlowUser: z.string().optional().describe("Username to run Client Credentials Flow requests as (e.g. 'admin@myorg.com'). Required by Salesforce if enableClientCredentialsFlow is true. This IS settable via the Metadata API for External Client Apps — unlike classic Connected Apps, where the same 'Run As' user can only be picked in Setup UI."),
+  permittedUsersPolicyType: z.enum(["AllSelfAuthorized", "AdminApprovedPreAuthorized"]).optional().describe("Who can authorize this app. AdminApprovedPreAuthorized (recommended for Client Credentials Flow) restricts use to explicitly pre-authorized profiles/permission sets. Defaults to Salesforce's own default (AllSelfAuthorized) if omitted."),
+  ipRelaxationPolicyType: z.enum(["Enforce", "Bypass", "Bypass_2factor", "Enforce_RelaxRefresh"]).optional().describe("IP restriction enforcement for this app's OAuth tokens."),
+  refreshTokenPolicyType: z.enum(["Infinite", "SpecificInactivity", "SpecificLifetime", "Zero"]).optional().describe("Refresh token expiry strategy."),
 }).strict();
 
 export const CreateExternalDataSourceSchema = z.object({

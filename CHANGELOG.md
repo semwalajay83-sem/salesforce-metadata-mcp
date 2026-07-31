@@ -1,5 +1,43 @@
 # Changelog
 
+## [2.8.7] - 2026-07-31
+
+### Added — `sf_create_external_client_app`, and it closes a gap `sf_create_connected_app` structurally cannot
+
+Asked why the previous release reached for a Connected App at all when External Client Apps (ECAs) are
+Salesforce's newer, recommended replacement, the honest answer was: the codebase simply had no ECA
+tool, so the fix used what existed. Built the missing tool instead of leaving that as a permanent
+excuse — and it turns out ECAs solve a real limitation, not just a modernization nicety.
+
+`ExternalClientApplication` decomposes into three independent metadata types
+(`ExternalClientApplication`, `ExtlClntAppOauthSettings`, `ExtlClntAppOauthConfigurablePolicies`),
+none of which are documented with a field-level reference on Salesforce's own metadata pages for the
+parts that matter most. Every field below — including the full 36-value OAuth scope enum, which the
+official docs don't list at all — was discovered by deploying deliberately-invalid values against a
+live org and reading Salesforce's own rejection messages (the scope enum came back complete, unprompted,
+in a single error string), then confirmed correct by deploying the real values and reading the records
+back. `sf_create_external_client_app` deploys all three components in one call.
+
+**The actual reason to prefer this over `sf_create_connected_app`:** on a classic Connected App,
+Client Credentials Flow's "Run As" user can only ever be picked in Setup UI — confirmed in the
+previous release, and still true, there is no metadata or REST field for it. On an External Client
+App, `ExtlClntAppOauthConfigurablePolicies.clientCredentialsFlowUser` sets it directly, verified live:
+create the app, enable the flow, name the user, done — no human required for that part. The one thing
+that's still Setup-UI-only for *either* app type is viewing the Consumer Key/Secret — Salesforce does
+not expose it via any API, full stop, and the tool's success message says so rather than implying the
+app is immediately usable.
+
+**Also fixed the same "cannot fail" defect in `sf_create_connected_app`'s own regression test** — it
+called the underlying function with a wrong parameter name (`appName` instead of `fullName`) and
+omitted the two required fields (`callbackUrls`, `scopes`) entirely, so it always threw internally and
+passed via `orgLimitFallback`'s catch. This is very likely *how* the scope-enum bug fixed in the
+previous release went unnoticed for as long as it did: the one test that should have caught it never
+actually ran the real code path. Fixed with real required parameters; added a matching real test for
+the new tool.
+
+Also updated the tool count (221→222) across `package.json`, `server.json`, `README.md`, `TOOLS.md`,
+and `CLAUDE.md`.
+
 ## [2.8.6] - 2026-07-31
 
 ### Fixed — `sf_create_connected_app` could never successfully grant any OAuth scope
