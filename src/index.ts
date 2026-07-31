@@ -7,7 +7,7 @@ import { registerTools } from "./tools/index.js";
 
 const server = new McpServer({
   name: "salesforce-metadata-mcp",
-  version: "2.9.0",
+  version: "2.10.0",
 });
 
 registerTools(server);
@@ -17,7 +17,7 @@ registerTools(server);
 async function runStdio(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Salesforce Metadata MCP server v2.9.0 running on stdio");
+  console.error("Salesforce Metadata MCP server v2.10.0 running on stdio");
 }
 
 // ─── Transport: HTTP ──────────────────────────────────────────────────────────
@@ -53,7 +53,7 @@ async function runHTTP(): Promise<void> {
 
     if (url === "/health" && req.method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", server: "salesforce-metadata-mcp", version: "2.9.0" }));
+      res.end(JSON.stringify({ status: "ok", server: "salesforce-metadata-mcp", version: "2.10.0" }));
       return;
     }
 
@@ -81,7 +81,7 @@ async function runHTTP(): Promise<void> {
   });
 
   httpServer.listen(port, host, () => {
-    console.error(`Salesforce Metadata MCP server v2.9.0 running on http://${host}:${port}/mcp`);
+    console.error(`Salesforce Metadata MCP server v2.10.0 running on http://${host}:${port}/mcp`);
   });
 }
 

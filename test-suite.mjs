@@ -35,7 +35,7 @@ import {
   exportOmniStudioComponent, importOmniStudioComponent,
   devOpsCreateWorkItem, devOpsPromoteWorkItem,
   detectDevOpsMergeConflict, checkDevOpsCommitStatus, promoteDevOpsWorkItem,
-  listMetadataType, queryRecords,
+  listMetadataType, queryRecords, deleteMetadataItems,
 } from './dist/services/salesforce.js';
 
 // ─── Test harness ─────────────────────────────────────────────────────────────
@@ -623,6 +623,21 @@ await test('sf_retrieve_metadata', async () => {
   const xml = await callMetadataSoap(auth, 'retrieve', body);
   const err = extractSoapError(xml);
   return err ? { success: false, message: err } : { success: true, message: 'Retrieve job started' };
+});
+
+await test('sf_delete_metadata', async () => {
+  // Real round-trip, not just a call: create a throwaway CustomLabel, delete it, confirm it's
+  // actually gone via readMetadataItem. Added 2026-08-01 — this tool didn't exist before; there was
+  // previously no way to remove anything this MCP server (or a caller) had deployed.
+  const { readMetadataItem } = await import('./dist/services/salesforce.js');
+  const labelName = `QA_Del_${TS}`;
+  const created = await createCustomLabel(auth, { fullName: labelName, value: 'temp', language: 'en_US', protected: false, shortDescription: 'QA delete-metadata round-trip test' });
+  if (!created.success) return { success: false, message: `setup (createCustomLabel) failed: ${created.message}` };
+  const del = await deleteMetadataItems(auth, 'CustomLabel', [labelName]);
+  if (!del.success) return { success: false, message: del.message };
+  const after = await readMetadataItem(auth, 'CustomLabel', labelName);
+  const stillExists = !/records xsi:nil="true"/.test(after.rawXml ?? '');
+  return { success: !stillExists, message: stillExists ? 'label still exists after delete' : `deleted '${labelName}', confirmed gone` };
 });
 
 await test('sf_check_deploy_status', async () => {

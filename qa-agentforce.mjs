@@ -120,9 +120,14 @@ const agentName = `QAAgent${TS}`;
 // Every optional field at once. `instructions` used to be here and broke the deploy outright
 // (<systemPrompt> is not a BotVersion field); it has been removed from the schema, and agent
 // guidance now belongs on the topics instead.
+// skipActionCapabilityCheck: true on every non-planner call below — this suite already has its own
+// Bot-availability gate (botAvailable, right after r1) with its own skip semantics; the new
+// sf_create_agent action-capability probe (added 2026-08-01) is a second, different gate (actions
+// specifically, not Bot deploy) that would otherwise make r1 fail here even though Bot deploy itself
+// works fine in this org — that's tested separately below in its own dedicated section.
 const r1 = await callTool('sf_create_agent', {
   agentName, label: 'QA Agent', description: 'QA agentforce test agent',
-  company: 'QA Co', persona: 'A test agent', tone: 'Neutral',
+  company: 'QA Co', persona: 'A test agent', tone: 'Neutral', skipActionCapabilityCheck: true,
 });
 /**
  * Capability gate. If the Bot type is not deployable, Agentforce is not provisioned, and every
@@ -164,7 +169,7 @@ if (!botAvailable) {
   // `type` was a no-op parameter whose only two allowed values were both invalid in Salesforce.
   // It has been removed, so the strict schema must now reject it rather than silently accept it.
   try {
-    await callTool('sf_create_agent', { agentName: `QAAgentT${TS}`, label: 'QA Agent Type', type: 'Default' });
+    await callTool('sf_create_agent', { agentName: `QAAgentT${TS}`, label: 'QA Agent Type', type: 'Default', skipActionCapabilityCheck: true });
     record('1', 'removed no-op `type` param is rejected by the schema', false, 'schema still accepts type');
   } catch (e) {
     record('1', 'removed no-op `type` param is rejected by the schema', true, e.message?.slice(0, 60));
@@ -172,7 +177,7 @@ if (!botAvailable) {
 
   // `instructions` produced an invalid <systemPrompt> element and broke every deploy that used it.
   try {
-    await callTool('sf_create_agent', { agentName: `QAAgentI${TS}`, label: 'QA Agent Instr', instructions: 'be brief' });
+    await callTool('sf_create_agent', { agentName: `QAAgentI${TS}`, label: 'QA Agent Instr', instructions: 'be brief', skipActionCapabilityCheck: true });
     record('1', 'removed `instructions` param is rejected by the schema', false, 'schema still accepts instructions');
   } catch (e) {
     record('1', 'removed `instructions` param is rejected by the schema', true, e.message?.slice(0, 60));
@@ -181,7 +186,7 @@ if (!botAvailable) {
 
 // Schema guardrail: Bot developer names reject underscores.
 try {
-  await callTool('sf_create_agent', { agentName: `QA_Agent_${TS}`, label: 'bad' });
+  await callTool('sf_create_agent', { agentName: `QA_Agent_${TS}`, label: 'bad', skipActionCapabilityCheck: true });
   record('1', 'underscore in agentName rejected by schema', false, 'schema accepted an invalid Bot API name');
 } catch (e) {
   record('1', 'underscore in agentName rejected by schema', true, e.message?.slice(0, 60));
@@ -189,10 +194,32 @@ try {
 
 // XML escaping — an ampersand in the label must not break the deploy.
 if (botAvailable) {
-  const r1c = await callTool('sf_create_agent', { agentName: `QAAgentAmp${TS}`, label: 'QA & Co <Agent>', description: 'a & b' });
+  const r1c = await callTool('sf_create_agent', { agentName: `QAAgentAmp${TS}`, label: 'QA & Co <Agent>', description: 'a & b', skipActionCapabilityCheck: true });
   record('1', 'ampersand/angle brackets in agent label are escaped', r1c.success, r1c.message);
 } else {
   recordSkip('1', 'ampersand/angle brackets in agent label are escaped', 'Bot type unavailable in this org');
+}
+
+// ─── Step 1b: action-capability pre-flight probe (added 2026-08-01) ───────────
+section('STEP 1b. sf_create_agent action-capability pre-flight probe');
+if (botAvailable) {
+  // demo-org confirmed (repeatedly, this and prior sessions) unable to create GenAiFunction actions —
+  // the probe should say so and refuse to create a shell, rather than leaving one orphaned once step
+  // 2 turns out to be unreachable.
+  const probeName = `QAProbeGate${TS}`;
+  const probeResult = await callTool('sf_create_agent', { agentName: probeName, label: 'QA Probe Gate' });
+  record('1b', 'probe blocks agent creation when actions are unsupported', probeResult.success === false && /cannot create custom agent actions/.test(probeResult.message ?? ''),
+    `expected a blocked, explanatory failure; got: ${JSON.stringify(probeResult).slice(0, 200)}`);
+  record('1b', 'blocked probe leaves no orphaned Bot shell', await existsInOrg('BotDefinition', probeName) === false,
+    'a Bot shell exists despite the probe reporting the action capability as unsupported');
+
+  const skippedProbeResult = await callTool('sf_create_agent', { agentName: `QASkipProbe${TS}`, label: 'QA Skip Probe', skipActionCapabilityCheck: true });
+  record('1b', 'skipActionCapabilityCheck bypasses the probe', skippedProbeResult.success === true,
+    `expected the shell to deploy when the probe is skipped; got: ${skippedProbeResult.message}`);
+} else {
+  recordSkip('1b', 'probe blocks agent creation when actions are unsupported', 'Bot type unavailable in this org');
+  recordSkip('1b', 'blocked probe leaves no orphaned Bot shell', 'Bot type unavailable in this org');
+  recordSkip('1b', 'skipActionCapabilityCheck bypasses the probe', 'Bot type unavailable in this org');
 }
 
 // ─── Step 2: actions ──────────────────────────────────────────────────────────
@@ -291,6 +318,20 @@ record('2', 'action referencing a nonexistent flow is rejected', r2c.success ===
 
 // ─── Step 3: topic ────────────────────────────────────────────────────────────
 section('STEP 3. sf_create_agent_topic');
+
+if (botAvailable) {
+  // Missing-action validation (added 2026-08-01): a topic referencing a nonexistent action used to
+  // deploy and fail with an opaque Salesforce support ErrorId naming nothing. Doesn't depend on
+  // actionsAvailable — deliberately references a name guaranteed not to exist.
+  const r3pre = await callTool('sf_create_agent_topic', {
+    agentName, topicName: `QAMissingActionTopic${TS}`, label: 'QA Missing Action Topic',
+    description: 'test', scope: 'test', actions: [`QA_Definitely_Missing_Action_${TS}`],
+  });
+  record('3', 'topic referencing a missing action is rejected with a specific message', r3pre.success === false && r3pre.message?.includes(`QA_Definitely_Missing_Action_${TS}`),
+    `expected a rejection naming the missing action; got: ${JSON.stringify(r3pre).slice(0, 200)}`);
+} else {
+  recordSkip('3', 'topic referencing a missing action is rejected with a specific message', 'Agentforce not provisioned');
+}
 
 const topicStr = `QATopicStr${TS}`;
 if (!botAvailable || !actionsAvailable) {

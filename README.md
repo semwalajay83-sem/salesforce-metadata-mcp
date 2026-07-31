@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io)
 
-**The only Salesforce MCP server that builds Agentforce agents, OmniStudio components, and DevOps Center pipelines** — alongside a complete daily developer loop (schema describe, Apex read, debug logs) and 222 tools total for building, configuring, and automating Salesforce orgs directly from Claude or any MCP client.
+**The only Salesforce MCP server that builds Agentforce agents, OmniStudio components, and DevOps Center pipelines** — alongside a complete daily developer loop (schema describe, Apex read, debug logs) and 223 tools total for building, configuring, and automating Salesforce orgs directly from Claude or any MCP client.
 
 ---
 
@@ -47,7 +47,7 @@ See [SETUP.md](SETUP.md) for all authentication methods and detailed setup instr
 
 ---
 
-## Tools — 222 total
+## Tools — 223 total
 
 Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with parameters and example prompts.
 
@@ -163,6 +163,7 @@ Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with param
 | `sf_deploy_metadata` | Deploy metadata via Metadata API (supports `testLevel`, inline XML) |
 | `sf_check_deploy_status` | Check deployment job status |
 | `sf_retrieve_metadata` | Retrieve metadata from the org |
+| `sf_delete_metadata` | Permanently delete metadata components (CustomObject, CustomField, Flow, GenAiFunction, Bot, etc.) |
 
 ### MCP Server Management
 | Tool | Description |
@@ -210,7 +211,7 @@ Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with param
 ## Documentation
 
 - [SETUP.md](SETUP.md) — Prerequisites, authentication, Claude configuration
-- [TOOLS.md](TOOLS.md) — All 222 tools with full parameter documentation
+- [TOOLS.md](TOOLS.md) — All 223 tools with full parameter documentation
 - [AGENTFORCE.md](AGENTFORCE.md) — Agentforce agent creation guide
 - [APEX_LWC.md](APEX_LWC.md) — Apex and LWC development guide
 - [CHANGELOG.md](CHANGELOG.md) — Version history

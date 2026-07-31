@@ -1,11 +1,67 @@
 import JSZip from "jszip";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CreateAgentSchema, CreateAgentTopicSchema, CreateAgentActionSchema, CreateAgentPlannerSchema } from "../schemas/index.js";
-import { getAuth, x, API_VERSION } from "../services/salesforce.js";
+import { getAuth, x, API_VERSION, deleteMetadataItems, readMetadataItem } from "../services/salesforce.js";
 import { buildGenericDeployZip, deployZip, pollDeployStatus } from "../services/deployment.js";
 import { resultContent } from "./utils.js";
+import type { SalesforceAuth } from "../types.js";
 
 const SF_NS = "http://soap.sforce.com/2006/04/metadata";
+
+// "Specify a valid invocationTarget and invocationTargetType" is what Salesforce returns BOTH for a
+// genuinely bad target AND for "custom agent actions aren't enabled in this org at all" — confirmed
+// live (2026-07-30 session, re-confirmed by a user report 2026-08-01) by pointing a GenAiFunction at
+// a deliberately nonexistent flow: an org where actions ARE supported gives a specific, different
+// error (e.g. naming the missing flow); an org where the capability itself is off gives this exact
+// generic message regardless of target validity. That makes it a reliable capability signal — unlike
+// checking for the Agentforce permission set licenses, which a live org confirmed can be fully active
+// while custom actions are still unsupported (licensing is not sufficient evidence either way).
+const CAPABILITY_DISABLED_MESSAGE = /Specify a valid invocationTarget and invocationTargetType/i;
+
+/**
+ * Probes whether this org can create GenAiFunction (custom agent action) records at all, before
+ * sf_create_agent commits to creating a Bot shell that step 2 of the 5-step sequence can never
+ * complete. Deploys a real, throwaway GenAiFunction aimed at a name that cannot exist, then reads the
+ * failure message to tell "capability disabled" apart from "target doesn't exist" (see
+ * CAPABILITY_DISABLED_MESSAGE above) — cleans up after itself either way, so this never leaves an
+ * orphan of its own. Found necessary 2026-08-01: a user's agent shell was left stranded in the org
+ * with no planner/topic/action once step 2 turned out to be unreachable, and there was no earlier
+ * point in the sequence that could have caught this.
+ */
+async function probeAgentActionCapability(auth: SalesforceAuth): Promise<{ supported: boolean; detail: string }> {
+  const probeName = `QA_Capability_Probe_${Date.now().toString(36)}`;
+  const probeXml = `<?xml version="1.0" encoding="UTF-8"?>
+<GenAiFunction xmlns="${SF_NS}">
+  <description>Capability probe — safe to delete if found; created and removed automatically by sf_create_agent.</description>
+  <developerName>${x(probeName)}</developerName>
+  <invocationTarget>__Nonexistent_Probe_Target_${Date.now().toString(36)}__</invocationTarget>
+  <invocationTargetType>flow</invocationTargetType>
+  <isConfirmationRequired>false</isConfirmationRequired>
+  <masterLabel>${x(probeName)}</masterLabel>
+</GenAiFunction>`;
+  try {
+    const base64Zip = await buildGenericDeployZip([], API_VERSION, [{ type: "GenAiFunction", name: probeName, xml: probeXml }]);
+    const deployId = await deployZip(auth, base64Zip, { rollbackOnError: true });
+    const result = await pollDeployStatus(auth, deployId, 2 * 60 * 1000);
+    if (result.success) {
+      // Unexpected (a nonexistent target should never deploy clean), but if it did, the capability
+      // clearly exists — clean up the probe and don't block anything.
+      await deleteMetadataItems(auth, "GenAiFunction", [probeName]).catch(() => null);
+      return { supported: true, detail: "probe deployed unexpectedly; capability confirmed" };
+    }
+    const message = result.message ?? "";
+    if (CAPABILITY_DISABLED_MESSAGE.test(message)) {
+      return { supported: false, detail: message };
+    }
+    // Any other failure (e.g. naming the specific missing target) means the org DID attempt target
+    // resolution — the capability exists, this probe just used a deliberately invalid target.
+    return { supported: true, detail: message };
+  } catch (err) {
+    // If the probe itself can't be attempted, don't block agent creation on an inconclusive result —
+    // fail open rather than blocking a capability check that couldn't run for an unrelated reason.
+    return { supported: true, detail: `probe inconclusive: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
 
 async function buildBotDeployZip(params: {
   agentName: string; label: string; description?: string;
@@ -75,13 +131,28 @@ export function registerAgentforceTools(server: McpServer): void {
     "sf_create_agent",
     {
       title: "Create Agentforce Agent",
-      description: `Creates an Agentforce Agent (Einstein Copilot) shell in Salesforce. THIS IS STEP 1 OF A 5-STEP SEQUENCE — calling this tool alone produces a non-functional agent shell. You MUST continue calling tools in this exact order without stopping: (0) FIRST create the backing flows (sf_create_flow, flowType=AutoLaunchedFlow, status=Active) and/or Apex classes (sf_create_apex_class with @InvocableMethod) for each capability. (1) THIS TOOL — sf_create_agent. (2) sf_create_agent_action — one call per flow/apex. (3) sf_create_agent_topic — group actions into topics; pass all action API names in the 'actions' array. (4) sf_create_agent_planner — wire topics to the agent. DO NOT report completion to the user until sf_create_agent_planner succeeds. Do not ask the user for confirmation between steps — proceed through all steps autonomously.`,
+      description: `Creates an Agentforce Agent (Einstein Copilot) shell in Salesforce. THIS IS STEP 1 OF A 5-STEP SEQUENCE — calling this tool alone produces a non-functional agent shell. You MUST continue calling tools in this exact order without stopping: (0) FIRST create the backing flows (sf_create_flow, flowType=AutoLaunchedFlow, status=Active) and/or Apex classes (sf_create_apex_class with @InvocableMethod) for each capability. (1) THIS TOOL — sf_create_agent. (2) sf_create_agent_action — one call per flow/apex. (3) sf_create_agent_topic — group actions into topics; pass all action API names in the 'actions' array. (4) sf_create_agent_planner — wire topics to the agent. DO NOT report completion to the user until sf_create_agent_planner succeeds. Do not ask the user for confirmation between steps — proceed through all steps autonomously. On the first call (no plannerName), this tool probes whether the org can create custom agent actions at all before creating the shell — if it can't, this call fails with no shell created, rather than leaving an orphaned Bot with no planner/topic/action once step 2 turns out to be unreachable. Active Agentforce permission set licenses do NOT guarantee this probe passes — those are a separate signal, confirmed live to be an unreliable one. Pass skipActionCapabilityCheck:true only for a topics-only agent (no custom actions planned) or when you already know the answer.`,
       inputSchema: CreateAgentSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     async (params) => {
       const auth = await getAuth();
       try {
+        // Only probe on the first call in the 5-step sequence (plannerName is only ever passed on the
+        // final, step-5 call to write the agent→planner link) — no point re-probing once the shell,
+        // and possibly actions/topics/planner, already exist. Found necessary 2026-08-01: without this,
+        // a org that can't create GenAiFunction actions at all still gets a Bot shell created here,
+        // then fails at step 2 with no way back — the shell is left permanently orphaned (no planner,
+        // no topic, no action) since there's no rollback across this 5-call sequence.
+        if (!params.plannerName && !params.skipActionCapabilityCheck) {
+          const capability = await probeAgentActionCapability(auth);
+          if (!capability.supported) {
+            return resultContent({
+              success: false,
+              message: `Not creating agent '${params.agentName}' yet: this org cannot create custom agent actions (GenAiFunction) — confirmed via a real probe deploy just now, not assumed. Proceeding would create the Bot shell, then fail at step 2 (sf_create_agent_action) and leave that shell permanently orphaned with no planner/topic/action, since this 5-step sequence has no rollback. IMPORTANT: this is NOT the same signal as the Agentforce permission set licenses being active — a live org confirmed those can be fully active while custom actions are still unsupported, so don't treat active PSLs as proof this will work. If the agent genuinely doesn't need any custom actions (topics with instructions/knowledge only, no Flow/Apex-backed actions), that IS supported here — call sf_create_agent again with the same arguments plus skipActionCapabilityCheck: true to bypass this probe and proceed with a topics-only agent. Otherwise, this needs Setup → Agentforce → Agent Actions (or equivalent licensing) enabled first. Salesforce's own detail: ${capability.detail}`,
+            });
+          }
+        }
         const base64Zip = await buildBotDeployZip({
           agentName: params.agentName,
           label: params.label ?? params.agentName,
@@ -116,6 +187,19 @@ export function registerAgentforceTools(server: McpServer): void {
     async (params) => {
       const auth = await getAuth();
       try {
+        // Salesforce's own error for a topic referencing a missing action is an opaque support
+        // ErrorId ("An unexpected error occurred..."), not anything naming the missing action —
+        // confirmed live 2026-08-01. GenAiFunction isn't SOQL/Tooling-queryable in every org (it
+        // isn't in this one), so existence is checked via Metadata API readMetadata instead, which
+        // works regardless of SOQL support for the type.
+        const missingActions: string[] = [];
+        for (const actionName of params.actions ?? []) {
+          const read = await readMetadataItem(auth, "GenAiFunction", actionName).catch(() => null);
+          if (!read?.success || /records xsi:nil="true"/.test(read.rawXml ?? "")) missingActions.push(actionName);
+        }
+        if (missingActions.length > 0) {
+          return resultContent({ success: false, message: `Not deploying topic '${params.topicName}': the following action(s) in 'actions' don't exist yet — ${missingActions.join(", ")}. Create them first with sf_create_agent_action, then retry. (Salesforce's own error for this — an opaque support ErrorId with no indication which action is missing — is why this is checked here first.)` });
+        }
         const instructionsXml = (Array.isArray(params.instructions) ? params.instructions : (params.instructions ? [params.instructions] : [])).map((instr: string, i: number) => `
   <genAiPluginInstructions>
     <description>${x(instr)}</description>

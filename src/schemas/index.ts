@@ -307,7 +307,7 @@ export const CreateFlowSchema = z.object({
   })).optional().describe("Constant resources — fixed values that never change during the flow run."),
   textTemplates: z.array(z.object({
     name: z.string().min(1).describe("Text template API name, e.g. 'Email_Body'"),
-    text: z.string().describe("Template body; may embed merge fields like {!$Record.Name}"),
+    text: z.string().describe("Template body; may embed merge fields like {!$Record.Name}. IMPORTANT (confirmed live 2026-08-01): Salesforce strips leading/trailing whitespace from the deployed template's content while preserving internal newlines — concatenating per-iteration templates in a loop without a separator runs lines together (e.g. 'first line last...NEXT: first line'). Put separators (spaces, newlines) INSIDE the template body, not relying on its edges."),
     isViewedAsPlainText: z.boolean().optional()
       .describe("true (default) for plain text, false for rich text/HTML"),
   })).optional().describe("Text template resources — reusable text blocks with merge fields, typically for email bodies."),
@@ -1013,6 +1013,7 @@ export const CreateAgentSchema = z.object({
   persona: z.string().max(5000).optional().describe("Agent persona/role description, e.g. 'A knowledgeable sales expert who helps close deals'. Deployed as the BotVersion <role>."),
   tone: z.enum(["Formal", "Neutral", "Casual"]).default("Neutral").describe("Communication tone for agent responses"),
   plannerName: z.string().min(1).max(80).optional().describe("API name of the GenAiPlannerBundle to attach this agent to. Normally omitted on the first call (the planner does not exist yet) — after sf_create_agent_planner succeeds, call this tool again with the same agentName plus plannerName to complete the agent→planner link. This tool is idempotent, so re-running it updates the existing agent."),
+  skipActionCapabilityCheck: z.boolean().optional().describe("Skip the pre-flight probe for GenAiFunction (custom agent action) support. The probe exists to fail fast before creating an orphaned agent shell in orgs that can't create custom actions — set this true only if you already know the agent needs topics/instructions with no custom Flow/Apex-backed actions, or already know the probe's answer from a prior call."),
 }).strict();
 
 export const CreateAgentTopicSchema = z.object({
@@ -1199,6 +1200,11 @@ export const RetrieveMetadataSchema = z.object({
   metadataType: z.string().optional().describe("Single metadata type (alternative to components array)"),
   componentName: z.string().optional().describe("Single component name (used with metadataType)"),
   packageXml: z.string().optional().describe("Raw package.xml content for selective retrieve. If provided, components list is ignored."),
+}).strict();
+
+export const DeleteMetadataSchema = z.object({
+  metadataType: z.string().min(1).describe("Metadata type to delete, e.g. 'CustomObject', 'CustomField', 'Flow', 'GenAiFunction', 'GenAiPlugin', 'GenAiPlannerBundle', 'Bot'"),
+  fullNames: z.array(z.string().min(1)).min(1).max(200).describe("Full names of the components to delete, e.g. ['My_Object__c'] or ['My_Object__c.My_Field__c']. Deletes each independently — some may succeed while others fail; check the response's deleted/errors lists rather than assuming all-or-nothing."),
 }).strict();
 
 // ─── OBJECTS & FIELDS (v2.2.0) ───────────────────────────────────────────────

@@ -5,8 +5,9 @@ import {
   DeployMetadataSchema,
   CheckDeployStatusSchema,
   RetrieveMetadataSchema,
+  DeleteMetadataSchema,
 } from "../schemas/index.js";
-import { getAuth, API_VERSION } from "../services/salesforce.js";
+import { getAuth, API_VERSION, deleteMetadataItems } from "../services/salesforce.js";
 import {
   buildGenericDeployZip,
   deployZip,
@@ -122,6 +123,21 @@ export function registerDeploymentTools(server: McpServer): void {
     async (params) => {
       const auth = await getAuth();
       const result = await retrieveMetadataAndWait(auth, params.components ?? []);
+      return resultContent(result);
+    }
+  );
+
+  server.registerTool(
+    "sf_delete_metadata",
+    {
+      title: "Delete Metadata",
+      description: `Permanently deletes one or more metadata components of a given type via the Metadata API's deleteMetadata call — works for CustomObject, CustomField, Flow, GenAiFunction, GenAiPlugin, GenAiPlannerBundle, Bot, ApexClass, and most other metadata types. There was previously no way to remove anything created by this MCP server (sf_deploy_metadata only supports adding/updating components, not destructiveChanges) — diagnostic or abandoned metadata had nowhere to go. Deletes each fullName independently: check the response's deleted/errors lists rather than assuming all all-or-nothing. Some types have dependency order requirements (e.g. delete a Bot's GenAiFunction/GenAiPlugin/GenAiPlannerBundle before the Bot itself, delete CustomField before its parent CustomObject) — Salesforce will reject a delete that still has dependents, naming them in the error.`,
+      inputSchema: DeleteMetadataSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    },
+    async (params) => {
+      const auth = await getAuth();
+      const result = await deleteMetadataItems(auth, params.metadataType, params.fullNames);
       return resultContent(result);
     }
   );

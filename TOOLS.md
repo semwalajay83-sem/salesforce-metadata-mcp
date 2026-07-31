@@ -1,6 +1,6 @@
 # Tools Reference
 
-Complete documentation for all 222 tools in `salesforce-metadata-mcp`. (Highlights below cover the most commonly used tools in depth; see the README's full 222-tool table for every tool name.)
+Complete documentation for all 223 tools in `salesforce-metadata-mcp`. (Highlights below cover the most commonly used tools in depth; see the README's full 223-tool table for every tool name.)
 
 ---
 
@@ -323,4 +323,4 @@ Reads the current field-level security grants for a field across all Profiles an
 
 ---
 
-*For the complete list of all 222 tools, see [README.md](README.md).*
+*For the complete list of all 223 tools, see [README.md](README.md).*

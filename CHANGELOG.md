@@ -1,5 +1,75 @@
 # Changelog
 
+## [2.10.0] - 2026-08-01
+
+### Fixed/Added — 4 more findings from an extended manual test session (Bugs 6-8, and a sharper Bug 3), plus 2 new tools
+
+Ajay's follow-up report superseded the previous one. Bugs 1, 2, 4, 5 from that report were already
+fixed in v2.9.0 (confirmed still present in this session, not re-fixed) — the report describing them
+as unfixed was written from a Claude Desktop session whose MCP server subprocess had been running
+since before v2.9.0 landed; restarting Claude Desktop picks up a rebuilt `dist/`, an already-spawned
+subprocess does not. New findings below.
+
+**Bug 3, revisited with much stronger evidence.** The previous release's conclusion (org-side schema
+propagation lag) held, but Ajay's new evidence sharpened *what kind* of lag it is: persisted 2+ hours
+in his session (ruling out ordinary propagation delay), and — critically — REST describe worked fine
+on **pre-existing** custom fields on standard objects (Opportunity's own custom fields) while failing
+on everything newly created, which looked like it might be specific to brand-new custom *objects*
+rather than fields in general. Tested that distinction directly and decisively: created a field on the
+standard `Account` object and a field on a brand-new custom object side by side, then polled both for
+2 full minutes. **Both were equally stuck** — this rules out "new object vs. existing object" as the
+differentiator. The real explanation: Ajay's "working" standard-object fields were older, already-
+propagated fields from earlier sessions, not freshly created ones — not evidence that new fields on
+standard objects propagate faster. Also directly tested Ajay's identity-mismatch hypothesis (REST and
+Metadata clients authenticating as different users): confirmed live that both use the exact same
+`auth.accessToken`, resolving to the same user (`semwalajaydevorg@agentforce.com`) and same org ID —
+ruled out. Revised, more precise conclusion: this org has a severe (multi-hour-observed), general
+schema-cache propagation lag affecting all newly created fields, regardless of parent object type —
+still not something any client-side code change can fix.
+
+**Bug 6: `sf_create_agent` now probes GenAiFunction (custom action) support before creating a Bot
+shell.** Reproduced Ajay's exact finding: active Agentforce permission set licenses are not sufficient
+evidence that custom actions work — confirmed by deploying a `GenAiFunction` aimed at a deliberately
+nonexistent target and getting the identical generic error a real target would get, meaning the org
+never even attempts target resolution. Added a pre-flight probe (a real, throwaway `GenAiFunction`
+deploy, cleaned up automatically) that runs before the Bot shell is created on the first call in the
+5-step sequence: if actions aren't supported, the call fails immediately with no shell created, instead
+of leaving an orphaned Bot with no planner/topic/action once step 2 turns out to be unreachable. Added
+`skipActionCapabilityCheck` for topics-only agents that don't need custom actions. Verified live both
+ways: the probe correctly blocks with no shell created, and the skip flag correctly bypasses it.
+
+**Bug 7: `sf_create_agent_topic` now validates that every referenced action exists before deploying.**
+Previously, a topic referencing a missing action deployed and failed with an opaque Salesforce support
+ErrorId naming nothing. `GenAiFunction` isn't SOQL/Tooling-queryable in every org (confirmed: it isn't
+in `demo-org`), so existence is checked via Metadata API `readMetadata` instead, which works regardless
+of SOQL support for the type. Verified live: a topic referencing a nonexistent action is now rejected
+before ever reaching Salesforce, naming the specific missing action.
+
+**Bug 8: added `sf_delete_metadata`.** There was previously no way to remove anything deployed by this
+MCP server — `sf_deploy_metadata` has no `destructiveChanges` support, and diagnostic/orphaned metadata
+had nowhere to go (confirmed: Ajay's stranded `AccountOpportunityAgent` Bot shell was still in the org,
+alongside 13 similar leftovers from earlier sessions). Wraps the `deleteMetadata` SOAP call, which
+already existed as an internal service function but was never exposed as a tool. Verified live with a
+real round-trip (create → delete → confirm gone) and by actually attempting cleanup of the accumulated
+org backlog: correctly surfaced Salesforce's own 10-record-per-call limit (batched around it), and
+correctly surfaced a real dependency-order error when a `GenAiPlannerBundle` was still referenced by a
+Bot. The specific stuck Bot records from earlier sessions remain undeletable — a pre-existing, already-
+documented Salesforce-side "unexpected error" on those particular records, not something this tool or
+any client-side retry can work around.
+
+**Documented, not a bug**: Flow `textTemplates` strip leading/trailing whitespace on deploy while
+preserving internal newlines — concatenating per-iteration templates in a loop without an internal
+separator runs lines together. Added to the `sf_create_flow` schema description.
+
+**Confirmed already fixed, not re-touched**: Bugs 1 (duplicate Decision rule names), 2 (filter value
+typing), 4 (FLS warning), 5 (raw-XML pre-validation) — all still present and correct in this codebase,
+verified by direct inspection before assuming anything needed re-fixing.
+
+Tool count 222→223 (`sf_delete_metadata`). Regression: `qa-agentforce.mjs` gained 5 new checks for
+Bugs 6/7 (all existing `sf_create_agent` calls updated with `skipActionCapabilityCheck` so the new
+probe doesn't change what those pre-existing tests were actually testing); `test-suite.mjs` gained a
+real create→delete→confirm-gone round-trip test for `sf_delete_metadata`.
+
 ## [2.9.0] - 2026-08-01
 
 ### Fixed — 5 real bugs from a genuine manual test session in Claude Desktop, all reproduced and re-verified live
