@@ -1,6 +1,36 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 // code-analyzer-suppress(cpd:DetectCopyPasteForTypescript)
-import { execSync } from "child_process";
+import spawnSyncSafe from "cross-spawn";
+
+/**
+ * Runs the `sf` CLI safely: cross-spawn passes each argument as a genuine argv entry (resolving
+ * the Windows .cmd shim correctly) instead of building a shell command-line string, which is what
+ * every prior `execSync(`sf ${args.join(" ")}`)` call in this file did. That pattern let any
+ * unvalidated string parameter (package IDs, paths, descriptions, aliases, rule selectors, ...)
+ * inject arbitrary shell commands — confirmed exploitable via a live test (`&& echo pwned`-style
+ * payload actually executed) during the 2026-07-31 security audit, not a theoretical concern.
+ * `execFileSync`/`spawnSync` without a shell can't resolve `sf.cmd` on Windows at all (ENOENT), and
+ * `shell: true` does NOT auto-escape array args despite documentation suggesting otherwise (verified
+ * live — Node's own runtime deprecation warning confirms "arguments are not escaped, only
+ * concatenated"). cross-spawn is the correct, widely-used fix for that gap — but on its own it is
+ * NOT sufficient: an argument combining a literal `"` with a shell metacharacter (e.g. `"x & ... &
+ * echo x"`) still reaches a live shell and executes, verified live against cross-spawn 7.0.6 on this
+ * host. `sf` is a `.cmd` batch-file shim on Windows; cross-spawn correctly escapes the first hop
+ * (cmd.exe invoking the shim), but the shim's own internal `%*` argument forwarding to node.exe is a
+ * second, uncontrolled re-parsing step outside cross-spawn's reach, and that is where this bypass
+ * lives. None of the values this codebase passes to `sf` (aliases, package/version IDs, file paths,
+ * install keys, rule selectors, descriptions) ever legitimately need a quote or shell metacharacter,
+ * so the allowlist below is a real fix, not just defense-in-depth theater.
+ */
+const SF_CLI_ARG_UNSAFE = /["`$&|;<>^\n\r]/;
+function runSfCli(args: string[], timeoutMs: number): { status: number | null; stdout: string; stderr: string; error?: Error } {
+  const bad = args.find(a => SF_CLI_ARG_UNSAFE.test(a));
+  if (bad !== undefined) {
+    return { status: null, stdout: "", stderr: "", error: new Error(`Argument rejected: contains a character not valid in any sf CLI value (quote or shell metacharacter): ${JSON.stringify(bad)}`) };
+  }
+  const res = spawnSyncSafe.sync("sf", args, { encoding: "utf-8", timeout: timeoutMs, env: { PATH: process.env["PATH"] ?? "" } });
+  return { status: res.status, stdout: res.stdout ?? "", stderr: res.stderr ?? "", error: res.error };
+}
 import { readFileSync, mkdtempSync, writeFileSync, rmSync, existsSync } from "fs";
 import { createSign } from "crypto";
 import { tmpdir } from "os";
@@ -29,7 +59,7 @@ const TOKEN_TTL_MS = 55 * 60 * 1000;
  * leakage of internal deployment paths or token-like values.
  */
 export function sanitizeError(msg: string): string {
-  return msg
+  return redactSensitive(msg)
     .replace(/(?:[A-Za-z]:\\|\/(?:usr|home|app|var|tmp|Users|opt))[^\s"')>]*/g, "[path]")
     .replace(/\bat\s+\S+\s*\([^)]*\)/g, "")
     .replace(/[A-Fa-f0-9]{40,}/g, "[token]")
@@ -38,15 +68,23 @@ export function sanitizeError(msg: string): string {
 }
 
 /**
- * Replaces Salesforce access-token patterns with [REDACTED] before writing to
- * stderr. Call this on any string that might contain credential data.
+ * Replaces Salesforce access-token/session-ID patterns with [REDACTED]. Called from sanitizeError
+ * (so every one of the ~100 catch blocks across this codebase that return an error to the MCP
+ * caller gets this protection, not just the couple of sites that called this directly before) and
+ * on anything written to stderr.
+ *
+ * Found broken during the 2026-07-31 security audit: a real Salesforce access token
+ * (`00D....!AQEA...`) survived `sanitizeError` completely unredacted — its only token pattern was
+ * `[A-Fa-f0-9]{40,}` (pure hex), and real SF tokens are base64url-ish with a literal `!` separator,
+ * so they never matched. The old `redactSensitive` had the right idea but its own character classes
+ * stopped at the first `!` or `.`, silently truncating the redaction and leaving most of the token
+ * exposed — verified live with a realistic token before and after this fix.
  */
 export function redactSensitive(msg: string): string {
   return msg
-    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+=*/gi, "$1[REDACTED]")
-    .replace(/\b00D[A-Za-z0-9!_]{15,}/g, "[REDACTED]")
-    .replace(/(access_token["':\s]+)[A-Za-z0-9._~+/=-]{20,}/gi, "$1[REDACTED]")
-    .replace(/(refresh_token["':\s]+)[A-Za-z0-9._~+/=-]{20,}/gi, "$1[REDACTED]");
+    .replace(/(Bearer\s+)\S+/gi, "$1[REDACTED]")
+    .replace(/\b00D[A-Za-z0-9]{12,18}![A-Za-z0-9._~+/=-]+/g, "[REDACTED]")
+    .replace(/((?:access|refresh|id)_token|sessionId|session_id)(["':=\s]+)[A-Za-z0-9._~+/=-]{15,}/gi, "$1$2[REDACTED]");
 }
 
 // ─── Fetch with timeout ───────────────────────────────────────────────────────
@@ -108,41 +146,31 @@ function validateHttpsUrl(raw: string): void {
  * @param alias - Validated org alias (alphanumeric, hyphens, underscores only)
  */
 function getFreshTokenFromCLI(alias: string): string {
-  // Strict allowlist — rejects spaces, semicolons, pipes, quotes, and all other
-  // shell metacharacters before the value is ever passed to execSync.
+  // Allowlist kept as defense-in-depth even though runSfCli/cross-spawn no longer parses this
+  // value through a shell — rejects spaces and other characters that aren't valid SF CLI alias
+  // syntax anyway, so a typo'd SF_ALIAS fails fast with a clear message.
   if (!/^[A-Za-z0-9_-]+$/.test(alias)) {
     throw new Error(
       "SF_ALIAS contains invalid characters. Only letters, numbers, hyphens, and underscores are permitted."
     );
   }
 
-  let rawOutput: string;
-  try {
-    // execSync is intentional here: the SF CLI is a supported auth prerequisite
-    // for this strategy. The child process is isolated with a minimal PATH.
-    rawOutput = execSync(`sf org auth show-access-token --target-org ${alias} --json`, {
-      encoding: "utf-8",
-      timeout: 30_000,
-      env: { PATH: process.env["PATH"] ?? "" },
-    });
-  } catch (err) {
-    // A non-zero exit doesn't always mean the token wasn't obtained — the CLI can print an
-    // update-nag banner or other noise that makes execSync treat the call as failed even though
-    // valid --json output is still sitting on stdout. Try that before giving up.
-    const stdout = (err as { stdout?: string }).stdout;
-    if (stdout) {
-      try {
-        const parsed = JSON.parse(stdout) as { result?: { accessToken?: string } };
-        if (parsed?.result?.accessToken) return parsed.result.accessToken;
-      } catch { /* stdout wasn't valid JSON either — fall through to the real error below */ }
-    }
-    const msg = err instanceof Error ? sanitizeError(err.message) : "SF CLI execution failed.";
+  const res = runSfCli(["org", "auth", "show-access-token", "--target-org", alias, "--json"], 30_000);
+  // A non-zero exit doesn't always mean the token wasn't obtained — the CLI can print an
+  // update-nag banner or other noise on stderr that makes this look like a failure even though
+  // valid --json output is still sitting on stdout. Try that before giving up.
+  if (res.status !== 0) {
+    try {
+      const parsed = JSON.parse(res.stdout) as { result?: { accessToken?: string } };
+      if (parsed?.result?.accessToken) return parsed.result.accessToken;
+    } catch { /* stdout wasn't valid JSON either — fall through to the real error below */ }
+    const msg = res.error ? sanitizeError(res.error.message) : sanitizeError(res.stderr || "SF CLI execution failed.");
     throw new Error(`SF CLI error: ${msg}`);
   }
 
   let parsed: { result?: { accessToken?: string } };
   try {
-    parsed = JSON.parse(rawOutput) as typeof parsed;
+    parsed = JSON.parse(res.stdout) as typeof parsed;
   } catch {
     throw new Error("SF CLI returned non-JSON output.");
   }
@@ -467,6 +495,33 @@ export function parseUpsertResult(xml: string): MetadataUpsertResult[] {
 
 export function x(str: string | null | undefined): string {
   return String(str ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+
+/**
+ * Escapes a value for use inside a single-quoted SOQL string literal. The single-quote escape
+ * (`\'`) is what SOQL itself expects — this is the same pattern already used ad hoc at ~15 call
+ * sites across this file; formalized here after a 2026-07-31 security audit found several sites
+ * that had been missed (params interpolated straight into a WHERE clause with no escaping at all —
+ * e.g. `sf_get_field_history`'s recordId, DevOps tools' workItemId). Also strips backslashes first,
+ * since an unescaped trailing backslash could otherwise consume the escaped quote's own backslash.
+ */
+function soqlEscape(str: string | null | undefined): string {
+  return String(str ?? "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+/**
+ * Validates a value used as an UNQUOTED SOQL date/datetime literal (e.g. `CreatedDate >= 2025-01-01`
+ * — no surrounding quotes, so soqlEscape's quote-escaping doesn't apply here at all). Several tools
+ * accepted `startDate`/`endDate` as unconstrained strings and interpolated them directly; found during
+ * the 2026-07-31 security audit. Accepts SOQL's two literal date forms: `YYYY-MM-DD` or full ISO 8601
+ * datetime, both optionally already carrying a trailing `Z`/offset (callers here always append `T...Z`
+ * themselves, so a bare `YYYY-MM-DD` is the expected/common shape).
+ */
+function assertSoqlDateLiteral(value: string, fieldLabel: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})?)?$/.test(value)) {
+    throw new Error(`${fieldLabel} must be a date in YYYY-MM-DD format (or full ISO 8601 datetime), got: ${JSON.stringify(value).slice(0, 100)}`);
+  }
+  return value;
 }
 
 // ─── XML Builders ────────────────────────────────────────────────────────────
@@ -2648,11 +2703,12 @@ export async function createFieldDependency(auth: SalesforceAuth, params: {
   // Reading + merging + patching the live Metadata avoids having to reconstruct all of that by hand.
   try {
     const client = createClient(auth);
-    const fieldDevName = params.dependentField.replace(/__c$/i, "");
+    const fieldDevName = soqlEscape(params.dependentField.replace(/__c$/i, ""));
     const isCustomLike = params.objectName.endsWith("__c") || params.objectName.endsWith("__mdt") || params.objectName.endsWith("__e");
+    const safeObjectName = soqlEscape(params.objectName);
     const query = isCustomLike
-      ? `SELECT Id, Metadata FROM CustomField WHERE DeveloperName='${fieldDevName}' AND EntityDefinition.QualifiedApiName='${params.objectName}'`
-      : `SELECT Id, Metadata FROM CustomField WHERE DeveloperName='${fieldDevName}' AND TableEnumOrId='${params.objectName}'`;
+      ? `SELECT Id, Metadata FROM CustomField WHERE DeveloperName='${fieldDevName}' AND EntityDefinition.QualifiedApiName='${safeObjectName}'`
+      : `SELECT Id, Metadata FROM CustomField WHERE DeveloperName='${fieldDevName}' AND TableEnumOrId='${safeObjectName}'`;
     const resp = await client.get<{ records: Array<{ Id: string; Metadata: Record<string, unknown> }> }>(`/tooling/query?q=${encodeURIComponent(query)}`);
     if (!resp.data.records.length) return { success: false, message: `Field '${params.objectName}.${params.dependentField}' not found in Tooling API.` };
     const record = resp.data.records[0];
@@ -4795,13 +4851,13 @@ export async function getSetupAuditTrail(auth: SalesforceAuth, params: Record<st
         const client = createClient(auth);
         const now = new Date();
         const defaultDays = params.lookbackDays ?? 30;
-        const startDate = params.startDate ?? new Date(now.getTime() - defaultDays * 86400000).toISOString().slice(0, 10);
-        const endDate = params.endDate ?? now.toISOString().slice(0, 10);
+        const startDate = assertSoqlDateLiteral(params.startDate ?? new Date(now.getTime() - defaultDays * 86400000).toISOString().slice(0, 10), "startDate");
+        const endDate = assertSoqlDateLiteral(params.endDate ?? now.toISOString().slice(0, 10), "endDate");
         const conditions = [];
         conditions.push(`CreatedDate >= ${startDate}T00:00:00Z`);
         conditions.push(`CreatedDate <= ${endDate}T23:59:59Z`);
-        if (params.createdByUsername) conditions.push(`CreatedBy.Username = '${params.createdByUsername.replace(/'/g, "\\'")}'`);
-        if (params.section) conditions.push(`Section = '${params.section.replace(/'/g, "\\'")}'`);
+        if (params.createdByUsername) conditions.push(`CreatedBy.Username = '${soqlEscape(params.createdByUsername)}'`);
+        if (params.section) conditions.push(`Section = '${soqlEscape(params.section)}'`);
         const soql = `SELECT Id, CreatedDate, CreatedBy.Username, Section, Action, Display FROM SetupAuditTrail WHERE ${conditions.join(" AND ")} ORDER BY CreatedDate DESC LIMIT ${params.limit ?? 100}`;
         const resp = await client.get(`/query?q=${encodeURIComponent(soql)}`);
         const records = ((resp.data as any).records ?? []).map((r: any) => ({
@@ -4821,13 +4877,13 @@ export async function getLoginHistory(auth: SalesforceAuth, params: Record<strin
         const client = createClient(auth);
         const now = new Date();
         const defaultHours = params.lookbackHours ?? (params.lookbackDays ? params.lookbackDays * 24 : 168);
-        const startDate = params.startDate ?? new Date(now.getTime() - defaultHours * 3600000).toISOString().slice(0, 10);
-        const endDate = params.endDate ?? now.toISOString().slice(0, 10);
+        const startDate = assertSoqlDateLiteral(params.startDate ?? new Date(now.getTime() - defaultHours * 3600000).toISOString().slice(0, 10), "startDate");
+        const endDate = assertSoqlDateLiteral(params.endDate ?? now.toISOString().slice(0, 10), "endDate");
         const conditions = [];
         conditions.push(`LoginTime >= ${startDate}T00:00:00Z`);
         conditions.push(`LoginTime <= ${endDate}T23:59:59Z`);
-        if (params.username) conditions.push(`Username = '${params.username.replace(/'/g, "\\'")}'`);
-        if (params.status) conditions.push(`Status = '${params.status.replace(/'/g, "\\'")}'`);
+        if (params.username) conditions.push(`Username = '${soqlEscape(params.username)}'`);
+        if (params.status) conditions.push(`Status = '${soqlEscape(params.status)}'`);
         const soql = `SELECT Id, LoginTime, UserId, SourceIp, Browser, Platform, Status, LoginType FROM LoginHistory WHERE ${conditions.join(" AND ")} ORDER BY LoginTime DESC LIMIT ${params.limit ?? 100}`;
         const resp = await client.get(`/query?q=${encodeURIComponent(soql)}`);
         const records = ((resp.data as any).records ?? []).map((r: any) => ({
@@ -4849,10 +4905,10 @@ export async function getEventLogs(auth: SalesforceAuth, params: Record<string, 
         const client = createClient(auth);
         const now = new Date();
         const defaultHours = params.lookbackHours ?? (params.lookbackDays ? params.lookbackDays * 24 : 24);
-        const startDate = params.startDate ?? new Date(now.getTime() - defaultHours * 3600000).toISOString().slice(0, 10);
-        const endDate = params.endDate ?? now.toISOString().slice(0, 10);
+        const startDate = assertSoqlDateLiteral(params.startDate ?? new Date(now.getTime() - defaultHours * 3600000).toISOString().slice(0, 10), "startDate");
+        const endDate = assertSoqlDateLiteral(params.endDate ?? now.toISOString().slice(0, 10), "endDate");
         const eventType = params.eventType ?? "Login";
-        const soql = `SELECT Id, EventType, LogFile, LogDate, LogFileLength FROM EventLogFile WHERE EventType = '${eventType.replace(/'/g, "\\'")}' AND LogDate >= ${startDate}T00:00:00Z AND LogDate <= ${endDate}T23:59:59Z ORDER BY LogDate DESC LIMIT ${params.limit ?? 10}`;
+        const soql = `SELECT Id, EventType, LogFile, LogDate, LogFileLength FROM EventLogFile WHERE EventType = '${soqlEscape(eventType)}' AND LogDate >= ${startDate}T00:00:00Z AND LogDate <= ${endDate}T23:59:59Z ORDER BY LogDate DESC LIMIT ${params.limit ?? 10}`;
         const resp = await client.get(`/query?q=${encodeURIComponent(soql)}`);
         const logFiles = (resp.data as any).records ?? [];
         if (logFiles.length === 0) {
@@ -4888,13 +4944,19 @@ export async function getEventLogs(auth: SalesforceAuth, params: Record<string, 
 export async function getFieldHistory(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const client = createClient(auth);
+        // objectApiName lands unquoted in both the FROM clause and the field name below — quote-escaping
+        // doesn't apply to an identifier position, so this must be validated against the actual character
+        // set Salesforce API names use instead (found missing entirely during the 2026-07-31 security audit).
+        if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(params.objectApiName)) {
+            throw new Error(`objectApiName must be a valid Salesforce API name (letters, numbers, underscores), got: ${JSON.stringify(params.objectApiName).slice(0, 100)}`);
+        }
         const historyObject = `${params.objectApiName}History`;
         // Standard objects use ObjectNameId (e.g. AccountId), custom objects use ParentId
         const parentIdField = params.objectApiName.endsWith("__c") ? "ParentId" : `${params.objectApiName}Id`;
         const fieldFilter = params.fields && params.fields.length > 0
-            ? ` AND Field IN (${params.fields.map((f: any) => `'${f.replace(/'/g, "\\'")}'`).join(",")})`
+            ? ` AND Field IN (${params.fields.map((f: any) => `'${soqlEscape(f)}'`).join(",")})`
             : "";
-        const soql = `SELECT Id, Field, OldValue, NewValue, CreatedDate, CreatedBy.Username FROM ${historyObject} WHERE ${parentIdField} = '${params.recordId}'${fieldFilter} ORDER BY CreatedDate DESC LIMIT ${params.limit ?? 100}`;
+        const soql = `SELECT Id, Field, OldValue, NewValue, CreatedDate, CreatedBy.Username FROM ${historyObject} WHERE ${parentIdField} = '${soqlEscape(params.recordId)}'${fieldFilter} ORDER BY CreatedDate DESC LIMIT ${params.limit ?? 100}`;
         const resp = await client.get(`/query?q=${encodeURIComponent(soql)}`);
         const records = ((resp.data as any).records ?? []).map((r: any) => ({
             date: r.CreatedDate,
@@ -4909,16 +4971,14 @@ export async function getFieldHistory(auth: SalesforceAuth, params: Record<strin
     }
 }
 export async function compareOrgs(params: any) {
-    const { execSync: exec } = await import("child_process");
     function getAuthForAlias(alias: any) {
         if (!/^[A-Za-z0-9_-]+$/.test(alias)) throw new Error(`Invalid org alias: ${alias}`);
-        let raw;
-        try {
-            raw = exec(`sf org display --target-org ${alias} --json`, { encoding: "utf-8", timeout: 30_000, env: { PATH: process.env["PATH"] ?? "" } });
-        } catch (e) {
-            throw new Error(`SF CLI failed for alias '${alias}': ${e instanceof Error ? sanitizeError(e.message) : "unknown error"}`);
+        const res = runSfCli(["org", "display", "--target-org", alias, "--json"], 30_000);
+        if (res.status !== 0) {
+            const msg = res.error ? sanitizeError(res.error.message) : sanitizeError(res.stderr || "unknown error");
+            throw new Error(`SF CLI failed for alias '${alias}': ${msg}`);
         }
-        const parsed = JSON.parse(raw);
+        const parsed = JSON.parse(res.stdout);
         const accessToken = parsed?.result?.accessToken;
         const instanceUrl = parsed?.result?.instanceUrl;
         if (!accessToken || !instanceUrl) throw new Error(`No credentials returned for alias '${alias}'.`);
@@ -5451,14 +5511,24 @@ export async function createFlowTest(auth: SalesforceAuth, params: Record<string
 }
 export async function createInvocableAction(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
-        const inputProps = (params.inputs ?? []).map((i: any) => `    @InvocableVariable(label='${i.label}' required=${i.required ? "true" : "false"})\n    public ${i.dataType.toLowerCase() === "sobject" ? (i.sObjectType ?? "SObject") : i.dataType} ${i.name};`).join("\n");
-        const outputProps = (params.outputs ?? []).map((o: any) => `    @InvocableVariable(label='${o.label}')\n    public ${o.dataType.toLowerCase() === "sobject" ? (o.sObjectType ?? "SObject") : o.dataType} ${o.name};`).join("\n");
+        // label/description/jobName-style free-text params land inside Apex string-literal annotation
+        // arguments below — soqlEscape's backslash-quote escaping applies identically to Apex string
+        // literals, and closes the same code-injection-via-generated-source gap fixed across this file
+        // during the 2026-07-31 security audit (an unescaped value could break out of the annotation's
+        // string literal and inject additional class members into the deployed, executable Apex class).
+        const inputProps = (params.inputs ?? []).map((i: any) => `    @InvocableVariable(label='${soqlEscape(i.label)}' required=${i.required ? "true" : "false"})\n    public ${i.dataType.toLowerCase() === "sobject" ? (i.sObjectType ?? "SObject") : i.dataType} ${i.name};`).join("\n");
+        const outputProps = (params.outputs ?? []).map((o: any) => `    @InvocableVariable(label='${soqlEscape(o.label)}')\n    public ${o.dataType.toLowerCase() === "sobject" ? (o.sObjectType ?? "SObject") : o.dataType} ${o.name};`).join("\n");
         const inputClass = (params.inputs ?? []).length > 0 ? `    public class ActionInput {\n${inputProps}\n    }` : "";
         const outputClass = (params.outputs ?? []).length > 0 ? `    public class ActionOutput {\n${outputProps}\n    }` : "";
         const inputParam = (params.inputs ?? []).length > 0 ? "List<ActionInput> inputs" : "";
         const returnType = (params.outputs ?? []).length > 0 ? "List<ActionOutput>" : "void";
         const methodBody = (params.outputs ?? []).length > 0 ? `        List<ActionOutput> results = new List<ActionOutput>();\n        // TODO: implement action logic\n        return results;` : "        // TODO: implement action logic";
-        const apexCode = `/**\n * ${params.description ?? params.label}\n */\npublic class ${params.actionName} {\n${inputClass}\n${outputClass}\n    @InvocableMethod(label='${params.label}' description='${params.description ?? params.label}')\n    public static ${returnType} ${params.apexMethodName ?? "execute"}(${inputParam}) {\n${methodBody}\n    }\n}`;
+        const safeLabel = soqlEscape(params.label);
+        const safeDescription = soqlEscape(params.description ?? params.label);
+        // The doc comment isn't parsed for quotes, but a literal `*/` would still close it early and
+        // turn the rest of this string back into live, deployed Apex — neutralize that separately.
+        const docComment = String(params.description ?? params.label ?? "").replace(/\*\//g, "* /");
+        const apexCode = `/**\n * ${docComment}\n */\npublic class ${params.actionName} {\n${inputClass}\n${outputClass}\n    @InvocableMethod(label='${safeLabel}' description='${safeDescription}')\n    public static ${returnType} ${params.apexMethodName ?? "execute"}(${inputParam}) {\n${methodBody}\n    }\n}`;
         // buildApexClassXml not needed — class is deployed via Tooling API below
         // client unused in this path (tooling api used directly)
         const baseUrl = `${auth.instanceUrl}/services/data/v${API_VERSION}`;
@@ -5601,8 +5671,18 @@ export async function createApexBatch(auth: SalesforceAuth, params: Record<strin
 }
 export async function createApexScheduler(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
+        // batchClassName is substituted directly into an executable `new X()` expression, not a string
+        // literal or comment, so quote/comment escaping doesn't apply — it must be a valid Apex
+        // identifier or rejected outright. Found unvalidated during the 2026-07-31 security audit.
+        if (params.batchClassName && !/^[A-Za-z][A-Za-z0-9_]*$/.test(params.batchClassName)) {
+            throw new Error(`batchClassName must be a valid Apex class name (letters, numbers, underscores), got: ${JSON.stringify(params.batchClassName).slice(0, 100)}`);
+        }
         const batchCode = params.batchClassName ? `        Database.executeBatch(new ${params.batchClassName}());` : "        // TODO: implement schedule logic";
-        const apexCode = `/**\n * ${params.description ?? `Scheduler for ${params.jobName}`}\n */\nglobal class ${params.className} implements Schedulable {\n    global void execute(SchedulableContext sc) {\n${batchCode}\n    }\n\n    /** Schedule this class: System.schedule('${params.jobName}', '${params.cronExpression ?? "0 0 2 * * ?"}', new ${params.className}()); */\n}`;
+        // jobName/description/cronExpression only ever land inside a /** ... */ doc comment here — Apex
+        // doesn't parse quotes inside comments, so the only breakout risk is a literal `*/` closing the
+        // comment early and turning the rest of this string back into live, deployed Apex code.
+        const commentSafe = (v: unknown) => String(v ?? "").replace(/\*\//g, "* /");
+        const apexCode = `/**\n * ${commentSafe(params.description ?? `Scheduler for ${params.jobName}`)}\n */\nglobal class ${params.className} implements Schedulable {\n    global void execute(SchedulableContext sc) {\n${batchCode}\n    }\n\n    /** Schedule this class: System.schedule('${commentSafe(params.jobName)}', '${commentSafe(params.cronExpression ?? "0 0 2 * * ?")}', new ${params.className}()); */\n}`;
         const result = await upsertApexClassViaTooling(auth, params.className, apexCode);
         return { success: true, fullName: params.className, created: result.created, message: `Scheduler class '${params.className}' ${result.created ? "created" : "updated"}. To schedule: System.schedule('${params.jobName}', '${params.cronExpression ?? "0 0 2 * * ?"}', new ${params.className}());` };
     } catch (err) {
@@ -5620,19 +5700,6 @@ export async function rollbackDeployment(auth: SalesforceAuth, params: Record<st
         const err = extractSoapError(xml);
         if (err) return { success: false, message: `Cannot roll back deployment: ${err}. Note: completed deployments cannot be rolled back via API — you must deploy a previous version.` };
         return { success: true, fullName: params.deploymentId, created: false, message: `Deployment '${params.deploymentId}' cancellation requested. Note: only in-progress deployments can be canceled — completed deployments cannot be rolled back via API.` };
-    } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
-    }
-}
-export async function createScratchOrg(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
-    try {
-        const { execSync: exec } = await import("child_process");
-        // featuresArg reserved for future --definition-file support
-        const defJson = JSON.stringify({ orgName: params.orgAlias, edition: params.edition ?? "Developer", features: params.features ?? [], adminEmail: params.adminEmail, description: params.description });
-        const cmd = `echo '${defJson.replace(/'/g, "\\'")}' | sf org create scratch --target-dev-hub ${params.devHubAlias ?? "DevHub"} --alias ${params.orgAlias} --duration-days ${params.duration ?? 7} --definition-file /dev/stdin --json`;
-        const raw = exec(cmd, { encoding: "utf-8", timeout: 300_000, env: { PATH: process.env["PATH"] ?? "" } });
-        const result = JSON.parse(raw);
-        return { success: true, fullName: params.orgAlias, created: true, message: `Scratch org '${params.orgAlias}' created. Username: ${result?.result?.username ?? "see org list"}. Expires in ${params.duration ?? 7} days.` };
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
     }
@@ -5835,7 +5902,7 @@ export async function createRestResource(auth: SalesforceAuth, params: Record<st
             const body = typeof m === "object" ? (m.apexCode ?? `// ${m.description ?? verb + " implementation"}\n        return null;`) : `// ${verb} implementation\n        return null;`;
             return `\n    @${annotation}\n    global static String do${methodName}() {\n        ${body}\n    }`;
         }).join("\n");
-        const apexCode = `@RestResource(urlMapping='${params.urlMapping}')\nglobal class ${params.resourceName} {\n${methodCode}\n}`;
+        const apexCode = `@RestResource(urlMapping='${soqlEscape(params.urlMapping)}')\nglobal class ${params.resourceName} {\n${methodCode}\n}`;
         const result = await upsertApexClassViaTooling(auth, params.resourceName, apexCode);
         return { success: true, fullName: params.resourceName, created: result.created, message: `REST resource '${params.resourceName}' ${result.created ? "deployed" : "updated"} at URL mapping '${params.urlMapping}'.` };
     } catch (err) {
@@ -5879,7 +5946,7 @@ export async function getApexTestResults(auth: SalesforceAuth, params: Record<st
     try {
         const client = createClient(auth);
         let where = "";
-        if (params.testRunId) where += ` AsyncApexJobId = '${params.testRunId}'`;
+        if (params.testRunId) where += ` AsyncApexJobId = '${soqlEscape(params.testRunId)}'`;
         if (params.className) where += `${where ? " AND" : ""} ApexClass.Name = '${params.className.replace(/'/g, "\\'")}'`;
         if (params.outcomeFilter && params.outcomeFilter !== "all") where += `${where ? " AND" : ""} Outcome = '${params.outcomeFilter}'`;
         const soql = `SELECT Id, ApexClass.Name, MethodName, Outcome, Message, RunTime, AsyncApexJobId FROM ApexTestResult${where ? ` WHERE${where}` : ""} ORDER BY ApexClass.Name, MethodName LIMIT 500`;
@@ -6522,20 +6589,20 @@ export async function createNotificationType(auth: SalesforceAuth, params: Recor
  * that stdout must be parsed first or the real Salesforce error reason is lost.
  */
 function execSfCli(args: string[], timeoutMs: number): { success: true; result: Record<string, unknown> } | { success: false; message: string } {
-    try {
-        const raw = execSync(`sf ${args.join(" ")}`, { encoding: "utf-8", timeout: timeoutMs, env: { PATH: process.env["PATH"] ?? "" } });
-        const parsed = JSON.parse(raw) as { result?: Record<string, unknown> };
-        return { success: true, result: parsed.result ?? {} };
-    } catch (err) {
-        const stdout = (err as { stdout?: string }).stdout;
-        if (stdout) {
-            try {
-                const parsed = JSON.parse(stdout) as { message?: string };
-                if (parsed.message) return { success: false, message: sanitizeError(parsed.message) };
-            } catch { /* stdout wasn't valid JSON — fall through to the generic message below */ }
-        }
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+    const res = runSfCli(args, timeoutMs);
+    if (res.status === 0) {
+        try {
+            const parsed = JSON.parse(res.stdout) as { result?: Record<string, unknown> };
+            return { success: true, result: parsed.result ?? {} };
+        } catch { /* fall through to error handling below */ }
     }
+    if (res.stdout) {
+        try {
+            const parsed = JSON.parse(res.stdout) as { message?: string };
+            if (parsed.message) return { success: false, message: sanitizeError(parsed.message) };
+        } catch { /* stdout wasn't valid JSON — fall through to the generic message below */ }
+    }
+    return { success: false, message: sanitizeError(res.error ? res.error.message : (res.stderr || "SF CLI execution failed.")) };
 }
 
 export async function createNewScratchOrg(_auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
@@ -6576,8 +6643,8 @@ export async function installPackage(_auth: SalesforceAuth, params: Record<strin
     const targetOrg = params.targetOrg ?? process.env["SF_ALIAS"];
     // --no-prompt is mandatory here, not optional: `sf package install` shows an interactive
     // Remote-Site-Settings/CSP confirmation for any package that talks to third-party sites, and
-    // since this runs via non-interactive execSync there's no way to answer it — without this flag
-    // the command hangs/force-fails (ExitPromptError) for most real-world packages.
+    // since this runs non-interactively there's no way to answer it — without this flag the command
+    // hangs/force-fails (ExitPromptError) for most real-world packages.
     const args: string[] = ["package", "install", "--package", params.packageId, "--json", "--no-prompt"];
     if (targetOrg) args.push("--target-org", targetOrg);
     if (params.installationKey) args.push("--installation-key", params.installationKey);
@@ -6648,9 +6715,9 @@ export async function checkCodeCoverage(auth: SalesforceAuth, params: Record<str
 export async function detectDevOpsMergeConflict(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const client = createClient(auth);
-        const query = `SELECT Id,Name,sf_devops__Status__c FROM sf_devops__Work_Item__c WHERE Id = '${params.workItemId}'`;
+        const query = `SELECT Id,Name,sf_devops__Status__c FROM sf_devops__Work_Item__c WHERE Id = '${soqlEscape(params.workItemId)}'`;
         const wi = await client.get<{ records: Array<Record<string, unknown>> }>(`/services/data/v${API_VERSION}/query?q=${encodeURIComponent(query)}`);
-        const conflictQuery = `SELECT Id,Name,sf_devops__Status__c FROM sf_devops__Merge_Conflict__c WHERE sf_devops__Work_Item__c = '${params.workItemId}'`;
+        const conflictQuery = `SELECT Id,Name,sf_devops__Status__c FROM sf_devops__Merge_Conflict__c WHERE sf_devops__Work_Item__c = '${soqlEscape(params.workItemId)}'`;
         const conflicts = await client.get<{ records: Array<Record<string, unknown>> }>(`/services/data/v${API_VERSION}/query?q=${encodeURIComponent(conflictQuery)}`);
         return { success: true, workItem: wi.data.records[0], conflicts: conflicts.data.records, hasConflicts: conflicts.data.records.length > 0 };
     } catch (err) {
@@ -6729,8 +6796,8 @@ export async function listDevOpsWorkItems(auth: SalesforceAuth, params: Record<s
         const limit = params.limit ?? 20;
         let query = "SELECT Id,Name,sf_devops__Status__c,sf_devops__Description__c FROM sf_devops__Work_Item__c";
         const conds: string[] = [];
-        if (params.projectId) conds.push(`sf_devops__Project__c = '${params.projectId}'`);
-        if (params.stageId) conds.push(`sf_devops__Pipeline_Stage__c = '${params.stageId}'`);
+        if (params.projectId) conds.push(`sf_devops__Project__c = '${soqlEscape(params.projectId)}'`);
+        if (params.stageId) conds.push(`sf_devops__Pipeline_Stage__c = '${soqlEscape(params.stageId)}'`);
         if (conds.length) query += ` WHERE ${conds.join(" AND ")}`;
         query += ` ORDER BY Name LIMIT ${limit}`;
         const resp = await client.get<{ records: Array<Record<string, unknown>> }>(`/services/data/v${API_VERSION}/query?q=${encodeURIComponent(query)}`);
@@ -6743,7 +6810,7 @@ export async function listDevOpsWorkItems(auth: SalesforceAuth, params: Record<s
 export async function checkDevOpsCommitStatus(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const client = createClient(auth);
-        const query = `SELECT Id,Name,sf_devops__Status__c,sf_devops__Message__c FROM sf_devops__Commit__c WHERE sf_devops__Work_Item__c = '${params.workItemId}' ORDER BY CreatedDate DESC LIMIT 10`;
+        const query = `SELECT Id,Name,sf_devops__Status__c,sf_devops__Message__c FROM sf_devops__Commit__c WHERE sf_devops__Work_Item__c = '${soqlEscape(params.workItemId)}' ORDER BY CreatedDate DESC LIMIT 10`;
         const resp = await client.get<{ records: Array<Record<string, unknown>> }>(`/services/data/v${API_VERSION}/query?q=${encodeURIComponent(query)}`);
         return { success: true, commits: resp.data.records, count: resp.data.records.length };
     } catch (err) {
@@ -7028,12 +7095,8 @@ export async function scanApexAntipatterns(auth: SalesforceAuth, params: Record<
 }
 
 function isJavaAvailable(): boolean {
-    try {
-        execSync("java -version", { stdio: "ignore", timeout: 10_000 });
-        return true;
-    } catch {
-        return false;
-    }
+    const res = spawnSyncSafe.sync("java", ["-version"], { stdio: "ignore", timeout: 10_000 });
+    return res.status === 0;
 }
 
 export async function runCodeScanner(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
@@ -7078,14 +7141,11 @@ export async function runCodeScanner(auth: SalesforceAuth, params: Record<string
         if (configFile) args.push("--config-file", configFile);
         for (const rs of ruleSelector) args.push("--rule-selector", rs);
 
-        try {
-            execSync(`sf ${args.map(a => `"${a}"`).join(" ")}`, { encoding: "utf-8", timeout: 300_000, env: { PATH: process.env["PATH"] ?? "" } });
-        } catch (runErr) {
-            // code-analyzer exits non-zero when --severity-threshold is met/exceeded; we don't set that
-            // flag, so a non-zero exit here means a real invocation failure, not "violations found".
-            if (!existsSync(outputFile)) {
-                throw runErr;
-            }
+        const scanRes = runSfCli(args, 300_000);
+        // code-analyzer exits non-zero when --severity-threshold is met/exceeded; we don't set that
+        // flag, so a non-zero exit here means a real invocation failure, not "violations found".
+        if (scanRes.status !== 0 && !existsSync(outputFile)) {
+            throw new Error(scanRes.error ? scanRes.error.message : (scanRes.stderr || "code-analyzer invocation failed."));
         }
 
         const raw = readFileSync(outputFile, "utf-8");

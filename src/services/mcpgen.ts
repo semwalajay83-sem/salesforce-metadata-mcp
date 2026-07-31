@@ -59,7 +59,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 const server = new McpServer({
-  name: "${params.serverName}",
+  name: ${JSON.stringify(params.serverName)},
   version: "1.0.0",
 });
 
@@ -85,7 +85,7 @@ server.registerTool(
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("${params.serverName} MCP server running on stdio");
+  console.error(${JSON.stringify(params.serverName)} + " MCP server running on stdio");
 }
 
 main().catch((err: unknown) => {
@@ -175,6 +175,15 @@ export async function createMcpTool(params: {
       return { success: false, message: `Could not read ${indexPath}. Make sure the project directory is correct.` };
     }
 
+    // inputSchema keys land as raw, unquoted object-property names in the generated source below —
+    // z.record(z.unknown()) means the caller can supply any string as a key at all, so an unvalidated
+    // key could break out of the intended property position and inject arbitrary code into the
+    // generated (and later compiled + executed) index.ts. Found during the 2026-07-31 security audit.
+    for (const k of Object.keys(params.inputSchema)) {
+      if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k)) {
+        return { success: false, message: `Invalid inputSchema field name ${JSON.stringify(k)}: must be a valid identifier (letters, numbers, underscore, $, not starting with a digit).` };
+      }
+    }
     const schemaFields = Object.entries(params.inputSchema)
       .map(([k, v]) => {
         const field = v as Record<string, unknown>;
@@ -185,11 +194,12 @@ export async function createMcpTool(params: {
       })
       .join("\n");
 
+    const toolTitle = params.toolName.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase());
     const toolCode = `
 server.registerTool(
-  "${params.toolName}",
+  ${JSON.stringify(params.toolName)},
   {
-    title: "${params.toolName.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase())}",
+    title: ${JSON.stringify(toolTitle)},
     description: ${JSON.stringify(params.toolDescription)},
     inputSchema: z.object({
 ${schemaFields}

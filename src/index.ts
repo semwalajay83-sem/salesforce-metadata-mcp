@@ -7,7 +7,7 @@ import { registerTools } from "./tools/index.js";
 
 const server = new McpServer({
   name: "salesforce-metadata-mcp",
-  version: "2.5.8",
+  version: "2.8.8",
 });
 
 registerTools(server);
@@ -17,7 +17,7 @@ registerTools(server);
 async function runStdio(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Salesforce Metadata MCP server v2.5.8 running on stdio");
+  console.error("Salesforce Metadata MCP server v2.8.8 running on stdio");
 }
 
 // ─── Transport: HTTP ──────────────────────────────────────────────────────────
@@ -40,13 +40,20 @@ function readBody(req: IncomingMessage): Promise<unknown> {
 
 async function runHTTP(): Promise<void> {
   const port = parseInt(process.env["PORT"] ?? "3000", 10);
+  // Defaults to localhost-only: this endpoint has no authentication of its own (any request that
+  // reaches /mcp executes tools using whatever Salesforce credentials this process is configured
+  // with), and Node's http.Server.listen(port) with no host binds to ALL interfaces by default —
+  // found during the 2026-07-31 security audit. Set HOST explicitly (e.g. "0.0.0.0") to opt into
+  // wider exposure — e.g. behind a reverse proxy that adds its own auth — rather than exposing this
+  // unauthenticated by accident.
+  const host = process.env["HOST"] ?? "127.0.0.1";
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const url = req.url ?? "/";
 
     if (url === "/health" && req.method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", server: "salesforce-metadata-mcp", version: "2.5.8" }));
+      res.end(JSON.stringify({ status: "ok", server: "salesforce-metadata-mcp", version: "2.8.8" }));
       return;
     }
 
@@ -73,8 +80,8 @@ async function runHTTP(): Promise<void> {
     res.end(JSON.stringify({ error: "Not found" }));
   });
 
-  httpServer.listen(port, () => {
-    console.error(`Salesforce Metadata MCP server v2.5.8 running on http://localhost:${port}/mcp`);
+  httpServer.listen(port, host, () => {
+    console.error(`Salesforce Metadata MCP server v2.8.8 running on http://${host}:${port}/mcp`);
   });
 }
 

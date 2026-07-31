@@ -1,5 +1,118 @@
 # Changelog
 
+## [2.8.8] - 2026-07-31
+
+### Security audit — one confirmed, exploitable command-injection vulnerability fixed, plus 13 more real findings across SOQL, generated-code, and credential-handling surfaces
+
+Ajay asked for a standing security review of this project, not tied to any specific bug report. Went
+through the codebase systematically rather than waiting for a report, and proved every finding below
+by actually attempting the attack through the real, compiled MCP tool handler — not just reading code
+and guessing. Everything here was found live against `demo-org`, the same standard this project holds
+itself to for functional bugs.
+
+**Command injection — CRITICAL, confirmed live-exploitable, now fixed.** Every `sf` CLI invocation in
+this codebase built a shell command by joining an args array with spaces and running it through
+`execSync`. Six tools passed unvalidated string parameters straight into that array:
+`sf_create_scratch_org`, `sf_delete_scratch_org`, `sf_create_package`, `sf_create_package_version`,
+`sf_install_package`, `sf_uninstall_package`, `sf_run_code_scanner`, `sf_scan_apex_antipatterns`.
+Proof of concept: a `devHubAlias` of `DevHub & echo INJECTED > marker.txt & echo x` actually created
+the marker file when run through `sf_create_scratch_org`'s real handler. Fixed by replacing every
+`execSync`/`exec` call with `cross-spawn`, which passes each argument as a genuine argv entry instead
+of shell text — re-verified the same payload no longer executes. **cross-spawn alone was not enough**:
+an argument combining a literal `"` with a shell metacharacter (e.g. `"x & ... & echo x"`) still
+reached a live shell even through cross-spawn 7.0.6's own escaping, because `sf` is a `.cmd` batch
+shim on Windows and its internal `%*` argument-forwarding to node.exe is a second, uncontrolled
+re-parsing step outside cross-spawn's reach — also proven live before being closed with an explicit
+character allowlist (`runSfCli` now rejects any argument containing `"`, `` ` ``, `$`, `&`, `|`, `;`,
+`<`, `>`, `^`, or a newline before it ever reaches cross-spawn; none of this codebase's CLI arguments —
+aliases, IDs, paths, keys, rule selectors — ever legitimately need one). Also deleted `createScratchOrg`,
+a second, entirely dead implementation of scratch-org creation with the same injection flaw plus
+broken shell quoting that would have failed on both POSIX and Windows — confirmed zero references
+anywhere before removing it.
+
+**SOQL injection — real, live, found across 9 call sites.** `sf_get_field_history` (`recordId` and
+`objectApiName`, the latter landing unquoted in a FROM-clause identifier position — no amount of
+quote-escaping fixes that, only an identifier allowlist does), `sf_get_setup_audit_trail` /
+`sf_get_login_history` / `sf_get_event_logs` (`startDate`/`endDate`, interpolated unquoted with zero
+format validation), `sf_get_apex_test_results` (`testRunId`), `sf_detect_devops_merge_conflict` /
+`sf_check_devops_commit_status` / `sf_list_devops_work_items` (`workItemId`/`projectId`/`stageId`),
+and `sf_create_field_dependency` (`objectName`/`dependentField` in a Tooling API query). Fixed with a
+new `soqlEscape()` helper (formalizing the backslash-quote pattern already used correctly at ~15 other
+call sites in this file) and a new `assertSoqlDateLiteral()` validator for the unquoted date-literal
+positions. `sf_query_records`'s raw `soql`/`whereClause`/`orderBy` and `sf_create_apex_batch`'s
+`queryFilter` were deliberately left alone — both are documented, intentional raw-SOQL-fragment
+parameters, the entire point of those tools, not an oversight.
+
+**Code injection into generated, later-executed source — found in both Apex and TypeScript
+generation.** `sf_create_invocable_action`'s `label`/`description` and its input/output variable
+labels landed unescaped inside `@InvocableMethod`/`@InvocableVariable` annotation string literals in
+generated Apex — an unescaped `'` breaks out of the literal and injects arbitrary class members into
+a class that gets deployed and can execute. Same pattern in the (dead, unwired — see below)
+`createApexScheduler`'s doc comment (a literal `*/` closes the comment early, turning the rest of the
+generated file back into live code) and `createRestResource`'s `urlMapping`. Fixed with the same
+`soqlEscape()` helper (Apex and SOQL use identical backslash-quote string-literal escaping) plus a
+comment-safe `*/`-stripping helper for the comment-only cases. **More seriously, this same class of
+bug was live and reachable** in `sf_create_mcp_server` and `sf_create_mcp_tool` (the tools that
+scaffold a brand-new MCP server project on disk): `serverName` and `toolName` were spliced unescaped
+into generated `.ts` source as string literals, and `sf_create_mcp_tool`'s `inputSchema` keys —
+`z.record(z.unknown())`, so literally any string — were spliced in as raw, unquoted object-property
+names with zero validation. Proof of concept: an `inputSchema` key of
+`x(){require("fs").writeFileSync("pwn2","x");return z.string()` was accepted by the old code and would
+have become live, executable code in the generated project the moment it was built and run. Fixed:
+`serverName`/`toolName` now go through `JSON.stringify()` (matching how `toolDescription` was already
+correctly handled in the same function — this was an inconsistency, not a from-scratch gap), and
+`inputSchema` keys are now validated against a strict identifier regex before generation, with a clear
+rejection instead of silent code smuggling.
+
+**Credential leak in the codebase's own default error-sanitization path — real, high-impact, silently
+broken since introduction.** `sanitizeError()` is called in essentially every one of this codebase's
+~100 catch blocks — it's what stands between an internal error and what gets returned to the calling
+LLM/user. Its only token-redaction rule was `[A-Fa-f0-9]{40,}` (pure hex, 40+ chars). Real Salesforce
+access tokens/session IDs look like `00Dxxxxxxxxxxxx!AQEAQ...` — base64url-ish with a literal `!`
+separator, never pure hex — so a real token embedded in any error message (a network client echoing a
+request URL, an API error quoting back session context) would have passed straight through
+completely unredacted. Proved this live with a realistic fake token before and after the fix. There
+was a second function, `redactSensitive()`, that had the right idea (a `Bearer` pattern, a `00D...`
+pattern) but its own character classes stopped at the first `!` or `.`, so it only partially redacted
+even the cases it targeted, and — separately — it was only ever called from 2 of the ~100 relevant
+sites, so almost nothing benefited from it regardless. Fixed by broadening the character classes to
+cover the actual token shape and having `sanitizeError()` call `redactSensitive()` internally, so
+every existing caller gets the protection retroactively with no call-site changes needed.
+
+**HTTP transport mode has no authentication and bound to all network interfaces by default.** This
+project supports `TRANSPORT=http` as an alternative to the default stdio transport. Its `/mcp` endpoint
+has no auth of its own — any request that reaches it executes MCP tools using whatever Salesforce
+credentials the server process is configured with — and `http.Server.listen(port)` with no explicit
+host binds to every interface, not just localhost, by Node's own default. Fixed: defaults to
+`127.0.0.1` now; set `HOST` explicitly (e.g. behind a reverse proxy that adds real auth) to opt into
+broader exposure instead of getting it by accident. This mode is opt-in and off by default (stdio is
+the default transport), so this was a foot-gun for anyone who did enable it, not an always-on gap.
+
+**Audited and confirmed clean, no action needed:** XML metadata builders (spot-checked ~60 candidate
+interpolation sites; every one was already either correctly wrapped in the existing `x()` escaper or a
+boolean/number field with no injection surface at all — the real gaps here were already closed in
+v2.8.2). `npm audit`: still exactly the 2 moderate findings already documented and deliberately left
+(a path-traversal bug in `@hono/node-server`'s `serve-static`, a transitive dependency of the MCP SDK
+that this project's own HTTP transport — a from-scratch, two-route implementation — never calls into
+regardless of transport mode; confirmed again this session, not just carried forward from memory).
+Secrets/credential files: confirmed `.gitignore` still covers `.env`, `.env.local`, `*.key`, and
+`CLAUDE.local.md`, and confirmed via `git log --all` that nothing secret-shaped has ever been committed.
+
+**Also found, not fixed (dead code, zero live exposure, hardened anyway for defense-in-depth):**
+`createInvocableAction`, `createApexScheduler`, and `createRestResource` are all exported from
+`services/salesforce.ts` but never imported by any tool file — confirmed via full-codebase grep before
+and after — so their injection fixes above protect nothing reachable today. Left in place rather than
+deleted (unlike `createScratchOrg`, which was both dead *and* had no legitimate salvage value) since
+these look like intended-but-never-wired functionality; flagging here so a future session that wires
+them up inherits the fix rather than reintroducing the bug.
+
+**Full regression confirmation:** `test-suite.mjs` (211 tests) — 208 passed, 2 failed (both pre-existing,
+unrelated, intentional negative-test probes), 1 skipped — no change from the pre-audit baseline.
+`qa-agentforce.mjs`, `qa-agentforce-adjacent.mjs`, and `qa-flow-comprehensive.mjs` all held their
+existing pass rates. Every fix above was also independently proven by re-attempting its specific
+exploit through the real, compiled tool handler and confirming it now fails cleanly instead of
+executing.
+
 ## [2.8.7] - 2026-07-31
 
 ### Added — `sf_create_external_client_app`, and it closes a gap `sf_create_connected_app` structurally cannot
