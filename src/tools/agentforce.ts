@@ -233,7 +233,19 @@ export function registerAgentforceTools(server: McpServer): void {
           const targetErr = /Specify a valid invocationTarget/i.test(result.message ?? "");
           return resultContent({ ...result, message: `Action deployment failed. Check that: (1) for Flow type — the flow '${params.reference}' exists and is Active (not Draft), (2) for ApexClass type — the class '${params.reference}' exists and has @InvocableMethod annotation, (3) actionName contains only letters/numbers/underscores.${targetErr ? ` NOTE: if '${params.reference}' is confirmed to exist and be active, this same error means custom agent actions are not enabled in this org — GenAiFunction appears in the metadata type list but rejects every invocationTargetType. Check your Agentforce/Einstein licensing in Setup rather than the target.` : ""} Salesforce error: ${result.message ?? JSON.stringify(result)}` });
         }
-        return resultContent({ success: true, fullName, created: true, message: `Action '${params.actionName}' created (type=${invTargetType}, reference=${params.reference}). DO NOT STOP — the agent is not wired yet. REQUIRED NEXT: if more actions are needed, call sf_create_agent_action again. Once all actions are created, call sf_create_agent_topic and pass ALL action API names (including '${params.actionName}') in the 'actions' array. Then call sf_create_agent_planner. Proceed immediately without asking the user.` });
+        // params.inputs (input parameter mappings) is accepted by the schema but was never wired into
+        // functionXml above — confirmed by grep, not an oversight in this pass, a pre-existing gap
+        // found during the 2026-07-31 Agentforce review. demo-org cannot create GenAiFunction actions
+        // at all (org licensing, documented elsewhere in this project), so there has never been a live
+        // org to verify the correct XML shape for input mappings against — consistent with this
+        // project's own rule not to ship unverified metadata XML, this is surfaced honestly instead of
+        // guessed at. If inputs is ever needed, verify the real GenAiFunction child-element shape
+        // against a live, action-capable org before implementing it.
+        const inputsCount = params.inputs?.length ?? 0;
+        const inputsNote = inputsCount > 0
+          ? ` NOTE: the ${inputsCount} 'inputs' entr${inputsCount === 1 ? "y" : "ies"} you passed were NOT applied — this parameter is accepted but not yet implemented (no live org has been available to verify the correct GenAiFunction XML shape for input mappings). The action was deployed without them.`
+          : "";
+        return resultContent({ success: true, fullName, created: true, message: `Action '${params.actionName}' created (type=${invTargetType}, reference=${params.reference}).${inputsNote} DO NOT STOP — the agent is not wired yet. REQUIRED NEXT: if more actions are needed, call sf_create_agent_action again. Once all actions are created, call sf_create_agent_topic and pass ALL action API names (including '${params.actionName}') in the 'actions' array. Then call sf_create_agent_planner. Proceed immediately without asking the user.` });
       } catch (err: unknown) {
         return resultContent({ success: false, message: `Action creation error: ${err instanceof Error ? err.message : String(err)}` });
       }

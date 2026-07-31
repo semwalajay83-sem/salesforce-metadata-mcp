@@ -1,5 +1,54 @@
 # Changelog
 
+## [2.8.9] - 2026-07-31
+
+### Fixed — the v2.8.8 command-injection guard was over-broad; narrowed after a second round of live testing
+
+Asked for a second round of testing before publishing v2.8.8, rather than treating the first pass as
+done. Good call: it surfaced a real false-positive regression in the fix itself. The original guard
+rejected any `sf` CLI argument containing `` " ` $ & | ; < > ^ `` — but a systematic, one-character-
+at-a-time live test (each character alone, then each paired with a quote) showed every one of those
+metacharacters is completely inert on its own through cross-spawn; **only a literal `"` combined with
+a following metacharacter reaches a live shell.** A quote alone never did either. That means the
+original guard would have rejected entirely legitimate values this codebase's own tools pass
+routinely — a package description like `"Sales & Service Tools"`, a company name like
+`"O'Brien Industries"` — with zero actual security benefit, since none of those ever reach a shell
+regardless. Narrowed to reject only `"` (plus raw newlines, never legitimate in a single CLI arg
+either). Re-verified live, both directions: the original exploit payload (`"x & echo ... & echo x"`)
+is still rejected; a package description containing `&` and `'` now reaches the real `sf` CLI instead
+of being rejected by the guard.
+
+### Reviewed in depth on request — Flow builder and Agentforce agent/topic/action/planner creation
+
+Ajay asked specifically for closer attention here. Read both Flow XML generators
+(`buildFlowXml`/SOAP and `buildFlowDeployXml`/ZIP, ~800 lines combined) end to end and all four
+Agentforce tools (`sf_create_agent`, `sf_create_agent_topic`, `sf_create_agent_action`,
+`sf_create_agent_planner`) line by line, not just grep-sampled. Result: both Flow builders escape
+every free-text value correctly and consistently (verified their `buildFilterValue`/
+`typedResourceValue` helpers apply `x()` at every actual string-literal insertion point); the
+remaining raw interpolations are all zod-enum-constrained `dataType` fields or booleans, not user
+text, so no injection surface. Agentforce's XML construction is equally clean throughout.
+
+**Did find one real, separate bug while reading this closely, unrelated to injection**:
+`sf_create_agent_action`'s `inputs` parameter (input parameter mappings — `[{name, value}]`) is
+accepted by the schema and documented, but was never wired into the generated `GenAiFunction` XML at
+all — confirmed by grep, not a one-off oversight in this pass. Any caller who passed `inputs` had them
+silently discarded, with no error and no indication in the response. This went uncaught because
+`demo-org` cannot create `GenAiFunction` actions at all (a pre-existing, documented org-licensing
+limit), so this parameter has never been exercised against a live org — and this project's own rule is
+not to ship metadata XML shapes that haven't been verified that way. Rather than guess at the correct
+XML (a real risk of shipping a second, differently-wrong bug), the tool's success message now says
+explicitly when `inputs` was provided but not applied, so callers aren't silently misled. Implementing
+it for real is still blocked on the same thing blocking the rest of GenAiFunction action testing: an
+org where custom agent actions are actually licensed.
+
+**Full regression**, both directions of this round: `test-suite.mjs` 207/211 passed — the one new
+"failure" beyond the existing 2 pre-existing ones (`sf_share_report_folder`) is test-state
+accumulation (it selects an existing report folder from the org, and today's own repeated
+`test-suite.mjs` runs have created enough of them that one now has a too-long derived name), not a
+code regression — unrelated to any change in this release. `qa-agentforce.mjs`,
+`qa-agentforce-adjacent.mjs`, and `qa-flow-comprehensive.mjs` (142/142) all held their existing rates.
+
 ## [2.8.8] - 2026-07-31
 
 ### Security audit — one confirmed, exploitable command-injection vulnerability fixed, plus 13 more real findings across SOQL, generated-code, and credential-handling surfaces

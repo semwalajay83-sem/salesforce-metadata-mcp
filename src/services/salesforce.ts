@@ -18,15 +18,26 @@ import spawnSyncSafe from "cross-spawn";
  * host. `sf` is a `.cmd` batch-file shim on Windows; cross-spawn correctly escapes the first hop
  * (cmd.exe invoking the shim), but the shim's own internal `%*` argument forwarding to node.exe is a
  * second, uncontrolled re-parsing step outside cross-spawn's reach, and that is where this bypass
- * lives. None of the values this codebase passes to `sf` (aliases, package/version IDs, file paths,
- * install keys, rule selectors, descriptions) ever legitimately need a quote or shell metacharacter,
- * so the allowlist below is a real fix, not just defense-in-depth theater.
+ * lives.
+ *
+ * The guard below rejects only `"` (plus raw newlines/CR, never legitimate in a single CLI arg
+ * either). An earlier version of this guard also rejected `` ` $ & | ; < > ^ `` outright, but a
+ * second, more precise round of live testing (mapping every character individually, both alone and
+ * combined with a quote) showed each of those is completely inert on its own through cross-spawn —
+ * only `"` combined with a following metacharacter reached a live shell; none of ~8 metacharacters
+ * tested alone ever did, quote-alone never did, and semicolon/caret/backtick/dollar all reproduced
+ * the bypass only when paired with a quote. Blocking all of them anyway would have rejected
+ * legitimate values this codebase's own tools pass routinely — a package description like "Sales &
+ * Service Tools" or an org/company name like "O'Brien Industries" — for no actual security benefit.
+ * `"` alone has no legitimate use in any of these fields (aliases, IDs, paths, keys, descriptions,
+ * rule selectors) and is the proven, necessary trigger for the vulnerability, so rejecting it alone
+ * is both sufficient and precise.
  */
-const SF_CLI_ARG_UNSAFE = /["`$&|;<>^\n\r]/;
+const SF_CLI_ARG_UNSAFE = /["\n\r]/;
 function runSfCli(args: string[], timeoutMs: number): { status: number | null; stdout: string; stderr: string; error?: Error } {
   const bad = args.find(a => SF_CLI_ARG_UNSAFE.test(a));
   if (bad !== undefined) {
-    return { status: null, stdout: "", stderr: "", error: new Error(`Argument rejected: contains a character not valid in any sf CLI value (quote or shell metacharacter): ${JSON.stringify(bad)}`) };
+    return { status: null, stdout: "", stderr: "", error: new Error(`Argument rejected: contains a double-quote or newline character, which is never valid in an sf CLI value: ${JSON.stringify(bad)}`) };
   }
   const res = spawnSyncSafe.sync("sf", args, { encoding: "utf-8", timeout: timeoutMs, env: { PATH: process.env["PATH"] ?? "" } });
   return { status: res.status, stdout: res.stdout ?? "", stderr: res.stderr ?? "", error: res.error };
