@@ -15,7 +15,7 @@
  */
 import { z } from 'zod';
 import { registerAgentforceTools } from './dist/tools/agentforce.js';
-import { getAuth, createFlow, queryRecords } from './dist/services/salesforce.js';
+import { getAuth, createFlow, queryRecords, createClient, readMetadataItem, deleteMetadataItems } from './dist/services/salesforce.js';
 import { deployZip, pollDeployStatus, buildApexClassZip, retrieveMetadataAndWait } from './dist/services/deployment.js';
 
 const TS = Date.now().toString().slice(-6);
@@ -75,12 +75,42 @@ async function deployedXml(type, name) {
   return { ok: true, xml: (r.files ?? []).map(f => f.content).join('\n'), why: '' };
 }
 
-/** Confirms a row actually landed in the org, rather than trusting the deploy result. */
+/**
+ * Confirms a row actually landed in the org, rather than trusting the deploy result. Dispatches by
+ * type since the plain REST `/query` endpoint used below can't see every Agentforce type — confirmed
+ * live 2026-08-03, the same session that fixed Bug 1/2 (sf_create_agent_action) and first actually
+ * exercised these checks (previously always skipped since actions never deployed at all):
+ * GenAiFunction/GenAiFunctionDefinition is Tooling-API-only (plain REST and even Metadata API
+ * readMetadata return nothing for it — this is why sf_create_agent_action now targets the Tooling API
+ * GenAiFunctionDefinition object, not a classic .genAiFunction deploy); GenAiPlugin has no SOQL
+ * interface at all (neither plain REST nor Tooling — confirmed both return INVALID_TYPE) but IS
+ * readable via the classic Metadata API readMetadata call. BotDefinition and GenAiPlannerDefinition
+ * are plain-REST-queryable as before.
+ */
 async function existsInOrg(sobject, devName) {
   try {
+    if (sobject === 'GenAiFunction' || sobject === 'GenAiFunctionDefinition') {
+      const client = createClient(auth);
+      const esc = devName.replace(/'/g, "\\'");
+      const r = await client.get(`/tooling/query?q=${encodeURIComponent(`SELECT Id FROM GenAiFunctionDefinition WHERE DeveloperName = '${esc}'`)}`);
+      return (r.data.records ?? []).length > 0;
+    }
+    if (sobject === 'GenAiPlugin') {
+      const r = await readMetadataItem(auth, 'GenAiPlugin', devName);
+      return r.success === true && !/records xsi:nil="true"/.test(r.rawXml ?? '');
+    }
     const r = await queryRecords(auth, { soql: `SELECT Id, DeveloperName FROM ${sobject} WHERE DeveloperName = '${devName}'` });
     return (r.records ?? []).length > 0;
   } catch (e) { return `query error: ${e.message}`; }
+}
+
+/** Reads a GenAiFunctionDefinition's InvocationTargetType via Tooling API (the field this suite used
+ * to check by retrieving a .genAiFunction file that, per the note above, never actually existed). */
+async function genAiFunctionInvocationTargetType(devName) {
+  const client = createClient(auth);
+  const esc = devName.replace(/'/g, "\\'");
+  const r = await client.get(`/tooling/query?q=${encodeURIComponent(`SELECT InvocationTargetType FROM GenAiFunctionDefinition WHERE DeveloperName = '${esc}'`)}`);
+  return r.data.records?.[0]?.InvocationTargetType;
 }
 
 // ─── Step 0: backing flow + Apex class the actions will point at ──────────────
@@ -200,25 +230,30 @@ if (botAvailable) {
   recordSkip('1', 'ampersand/angle brackets in agent label are escaped', 'Bot type unavailable in this org');
 }
 
-// ─── Step 1b: action-capability pre-flight probe (added 2026-08-01) ───────────
+// ─── Step 1b: action-capability pre-flight probe (added 2026-08-01, corrected 2026-08-03) ─────
 section('STEP 1b. sf_create_agent action-capability pre-flight probe');
 if (botAvailable) {
-  // demo-org confirmed (repeatedly, this and prior sessions) unable to create GenAiFunction actions —
-  // the probe should say so and refuse to create a shell, rather than leaving one orphaned once step
-  // 2 turns out to be unreachable.
+  // Corrected 2026-08-03: a user bug report showed the probe (and sf_create_agent_action itself)
+  // used a payload that Salesforce's own Agent Builder never uses — GenAiFunction.invocationTarget
+  // must be a record ID, not the flow/class API name, and the working mechanism is a Tooling API
+  // GenAiFunctionDefinition insert, not a classic .genAiFunction deploy. demo-org, previously
+  // "confirmed unable to create GenAiFunction actions" under the old (broken) mechanism, actually
+  // supports them fine — this probe should now PASS here, not block. No genuinely
+  // GenAiFunctionDefinition-less org is available this session to exercise the block path live; that
+  // branch is covered by symmetry with the plain REST API's confirmed-unqueryable behavior for this
+  // type (see probeAgentActionCapability's own comments), not independently re-verified here.
   const probeName = `QAProbeGate${TS}`;
   const probeResult = await callTool('sf_create_agent', { agentName: probeName, label: 'QA Probe Gate' });
-  record('1b', 'probe blocks agent creation when actions are unsupported', probeResult.success === false && /cannot create custom agent actions/.test(probeResult.message ?? ''),
-    `expected a blocked, explanatory failure; got: ${JSON.stringify(probeResult).slice(0, 200)}`);
-  record('1b', 'blocked probe leaves no orphaned Bot shell', await existsInOrg('BotDefinition', probeName) === false,
-    'a Bot shell exists despite the probe reporting the action capability as unsupported');
+  record('1b', 'probe allows agent creation when actions are supported', probeResult.success === true,
+    `expected the probe to pass and the shell to deploy; got: ${JSON.stringify(probeResult).slice(0, 200)}`);
+  if (probeResult.success) await deleteMetadataItems(auth, 'Bot', [probeName]).catch(() => null);
 
   const skippedProbeResult = await callTool('sf_create_agent', { agentName: `QASkipProbe${TS}`, label: 'QA Skip Probe', skipActionCapabilityCheck: true });
   record('1b', 'skipActionCapabilityCheck bypasses the probe', skippedProbeResult.success === true,
     `expected the shell to deploy when the probe is skipped; got: ${skippedProbeResult.message}`);
+  if (skippedProbeResult.success) await deleteMetadataItems(auth, 'Bot', [`QASkipProbe${TS}`]).catch(() => null);
 } else {
-  recordSkip('1b', 'probe blocks agent creation when actions are unsupported', 'Bot type unavailable in this org');
-  recordSkip('1b', 'blocked probe leaves no orphaned Bot shell', 'Bot type unavailable in this org');
+  recordSkip('1b', 'probe allows agent creation when actions are supported', 'Bot type unavailable in this org');
   recordSkip('1b', 'skipActionCapabilityCheck bypasses the probe', 'Bot type unavailable in this org');
 }
 
@@ -239,12 +274,11 @@ const topicName = `QATopic${TS}`;
 const flowActionName = `QAFlowAction${TS}`;
 const apexActionName = `QAApexAction${TS}`;
 /**
- * Second capability gate. An org can have Agentforce (Bot deploys fine) yet still refuse custom
- * agent actions: GenAiFunction appears in the metadata type list but rejects EVERY documented
- * invocationTargetType — flow, apex and standard invocable actions alike — with "Specify a valid
- * invocationTarget and invocationTargetType", even against a confirmed-Active flow and Apex class.
- * Verified by hand-deploying spec-compliant XML outside this suite. Since step 0 asserts the targets
- * exist, that error here means the org, not the tool, so the action-dependent checks are skipped.
+ * Second capability gate, kept for orgs where Agentforce is on but custom actions genuinely are not
+ * (a real distinction — see resolveInvocationTargetId's unsupported-type message and the probe in
+ * agentforce.ts). Corrected 2026-08-03: demo-org DOES support this once invocationTarget resolves to
+ * a record ID, so this branch is not expected to trigger here anymore — kept as a real capability
+ * check, not the old always-false gate.
  */
 let actionsAvailable = true;
 if (botAvailable) {
@@ -252,32 +286,26 @@ if (botAvailable) {
     actionName: flowActionName, label: 'QA Flow Action', description: 'Runs the QA flow',
     type: 'Flow', reference: flowName,
   });
-  actionsAvailable = !(r2a.success === false && /Specify a valid invocationTarget/i.test(r2a.message ?? ''));
-  const why = 'custom agent actions not enabled in this org — GenAiFunction rejects every invocationTargetType, including standard actions';
+  actionsAvailable = r2a.success === true;
+  const why = `sf_create_agent_action reported: ${r2a.message}`;
   if (!actionsAvailable) {
     recordSkip('2', 'Flow-backed action deploys', why);
-    recordSkip('2', 'Flow action exists in org (GenAiFunction)', why);
+    recordSkip('2', 'Flow action exists in org (GenAiFunctionDefinition)', why);
     recordSkip('2', 'ApexClass-backed action deploys', why);
-    recordSkip('2', 'Apex action exists in org (GenAiFunction)', why);
-    record('2', 'action failure message points at org licensing, not the target',
-      /not enabled in this org/.test(r2a.message ?? ''),
-      `message still blames the target: ${r2a.message}`);
+    recordSkip('2', 'Apex action exists in org (GenAiFunctionDefinition)', why);
   } else {
     record('2', 'Flow-backed action deploys', r2a.success, r2a.message);
-    record('2', 'Flow action exists in org (GenAiFunction)', await existsInOrg('GenAiFunction', flowActionName) === true,
-      'GenAiFunction row not found');
+    record('2', 'Flow action exists in org (GenAiFunctionDefinition)', await existsInOrg('GenAiFunctionDefinition', flowActionName) === true,
+      'GenAiFunctionDefinition row not found');
 
     const r2b = await callTool('sf_create_agent_action', {
       actionName: apexActionName, label: 'QA Apex Action', description: 'Runs the QA Apex',
       type: 'ApexClass', reference: apexName,
     });
     record('2', 'ApexClass-backed action deploys', r2b.success, r2b.message);
-    record('2', 'Apex action exists in org (GenAiFunction)', await existsInOrg('GenAiFunction', apexActionName) === true,
-      'GenAiFunction row not found');
+    record('2', 'Apex action exists in org (GenAiFunctionDefinition)', await existsInOrg('GenAiFunctionDefinition', apexActionName) === true,
+      'GenAiFunctionDefinition row not found');
   }
-
-  // Asserting on the deployed invocationTargetType needs a polled retrieve (retrieveMetadata only
-  // returns a job id). The SOQL row existing already proves the target/type pair was accepted.
 }
 
 // agentName/topicName are unused by the handler and are now optional — omitting them must not be a
@@ -291,27 +319,37 @@ const r2c = await callTool('sf_create_agent_action', {
 record('2', 'agentName/topicName are optional (handler never uses them)', true,
   'call was accepted by the schema without them');
 
-// The schema advertises five action types; only Flow and ApexClass had ever been exercised. Each maps
-// to a different invocationTargetType, so a wrong mapping in the others would be invisible until a
-// user hit it. Where the org cannot create actions at all these still can't deploy, but the type
-// mapping itself is asserted against the tool's own typeMap.
-const TYPE_MAP = { Flow: 'flow', ApexClass: 'apex', PromptTemplate: 'promptTemplate', DataCategoryGroup: 'dataCategoryGroup', ExternalService: 'externalService' };
-for (const [t, expected] of Object.entries(TYPE_MAP)) {
+// Corrected 2026-08-03: only Flow and ApexClass have a live-verified invocationTarget ID-resolution
+// (FlowDefinition.Id / ApexClass.Id) and invocationTargetType ('flow' / 'apex'). PromptTemplate,
+// DataCategoryGroup, and ExternalService are now deliberately refused by resolveInvocationTargetId
+// rather than deploying a guessed, unverified payload — so this checks the refusal, not a deploy.
+// Verification reads the field back from GenAiFunctionDefinition via Tooling API (the old
+// deployedXml('GenAiFunction', ...) check always returned nothing — that metadata type isn't visible
+// via Metadata API retrieve for records created either way, per the notes in agentforce.ts).
+const VERIFIED_TYPE_MAP = { Flow: 'flow', ApexClass: 'apex' };
+for (const [t, expected] of Object.entries(VERIFIED_TYPE_MAP)) {
+  const an = `QAType${t}${TS}`;
+  const reference = t === 'Flow' ? flowName : apexName;
+  const r = await callTool('sf_create_agent_action', {
+    actionName: an, label: `QA ${t}`, description: `QA ${t} action`, type: t, reference,
+  });
+  if (r.success) {
+    const actual = await genAiFunctionInvocationTargetType(an);
+    record('2', `action type ${t} deploys with invocationTargetType=${expected}`, actual === expected,
+      `GenAiFunctionDefinition.InvocationTargetType is '${actual}', expected '${expected}'`);
+  } else {
+    record('2', `action type ${t} deploys with invocationTargetType=${expected}`, false, r.message);
+  }
+}
+const UNVERIFIED_TYPES = ['PromptTemplate', 'DataCategoryGroup', 'ExternalService'];
+for (const t of UNVERIFIED_TYPES) {
   const an = `QAType${t}${TS}`;
   const r = await callTool('sf_create_agent_action', {
     actionName: an, label: `QA ${t}`, description: `QA ${t} action`, type: t, reference: `QARef${t}`,
   });
-  if (r.success) {
-    const { ok, xml, why } = await deployedXml('GenAiFunction', an);
-    record('2', `action type ${t} deploys with invocationTargetType=${expected}`,
-      ok && xml.includes(`<invocationTargetType>${expected}</invocationTargetType>`),
-      ok ? `deployed XML does not carry ${expected}` : why);
-  } else if (/Specify a valid invocationTarget|not enabled in this org/i.test(r.message ?? '')) {
-    recordSkip('2', `action type ${t} deploys with invocationTargetType=${expected}`,
-      'org cannot create GenAiFunction; target-type mapping unverifiable here');
-  } else {
-    record('2', `action type ${t} deploys with invocationTargetType=${expected}`, false, r.message);
-  }
+  record('2', `action type ${t} is honestly refused (not yet verified)`,
+    r.success === false && /not yet supported/i.test(r.message ?? ''),
+    `expected an explicit not-yet-supported refusal; got: ${JSON.stringify(r).slice(0, 200)}`);
 }
 record('2', 'action referencing a nonexistent flow is rejected', r2c.success === false,
   r2c.success ? 'deployed successfully despite a dangling invocationTarget' : r2c.message);
@@ -476,13 +514,14 @@ if (botAvailable) {
 }
 
 if (botAvailable && actionsAvailable) {
-  const fns = await queryRecords(auth, { soql: `SELECT Id, DeveloperName FROM GenAiFunction WHERE DeveloperName IN ('${flowActionName}','${apexActionName}')` });
-  record('5', 'both actions present', (fns.records ?? []).length === 2,
-    `expected 2 GenAiFunction rows, got ${(fns.records ?? []).length}`);
+  const client = createClient(auth);
+  const fns = await client.get(`/tooling/query?q=${encodeURIComponent(`SELECT Id, DeveloperName FROM GenAiFunctionDefinition WHERE DeveloperName IN ('${flowActionName}','${apexActionName}')`)}`);
+  record('5', 'both actions present', (fns.data.records ?? []).length === 2,
+    `expected 2 GenAiFunctionDefinition rows, got ${(fns.data.records ?? []).length}`);
 
-  const plugins = await queryRecords(auth, { soql: `SELECT Id, DeveloperName FROM GenAiPlugin WHERE DeveloperName IN ('${topicName}','${topicStr}')` });
-  record('5', 'both topics present', (plugins.records ?? []).length === 2,
-    `expected 2 GenAiPlugin rows, got ${(plugins.records ?? []).length}`);
+  const topicsFound = (await Promise.all([topicName, topicStr].map(n => existsInOrg('GenAiPlugin', n)))).filter(x => x === true).length;
+  record('5', 'both topics present', topicsFound === 2,
+    `expected 2 GenAiPlugin rows (via readMetadata), got ${topicsFound}`);
 } else {
   recordSkip('5', 'both actions present', 'custom agent actions not enabled in this org');
   recordSkip('5', 'both topics present', 'depends on actions that cannot be created here');

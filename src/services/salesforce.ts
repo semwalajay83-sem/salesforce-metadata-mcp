@@ -4037,6 +4037,15 @@ export async function createPublicGroup(auth: SalesforceAuth, params: Record<str
         return { success: false, message: sanitizeError(msg) };
     }
 }
+// Standard objects whose 404 on describe is usually "feature disabled in Setup", not "doesn't exist" —
+// reported 2026-08-03 (Quote: describe 404s when the Quotes feature is off, sending users hunting for a
+// typo instead of Setup → Quote Settings). Not exhaustive; covers the common feature-gated ones.
+const FEATURE_GATED_STANDARD_OBJECTS = new Set([
+    "quote", "quotelineitem", "contract", "contractlineitem", "order", "orderitem",
+    "campaign", "campaignmember", "territory2", "territory2model", "workorder",
+    "workorderlineitem", "serviceappointment", "serviceterritory", "entitlement",
+    "socialpost", "idea", "question", "reply",
+]);
 export async function describeObject(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const client = createClient(auth);
@@ -4104,7 +4113,13 @@ export async function describeObject(auth: SalesforceAuth, params: Record<string
             message: `Describe complete for ${d.name}: ${fields.length} field(s), ${childRelationships.length} child relationship(s), ${recordTypeInfos.length} record type(s).${waitNote}`,
         };
     } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+        const msg = sanitizeError(err instanceof Error ? err.message : String(err));
+        const objectApiName: string = params.objectApiName ?? "";
+        const notFound = /error 404/i.test(msg) && /NOT_FOUND/i.test(msg);
+        const hint = notFound && FEATURE_GATED_STANDARD_OBJECTS.has(objectApiName.toLowerCase())
+            ? ` '${objectApiName}' is a standard Salesforce object — a 404 here usually means its feature is disabled in this org (check Setup → ${objectApiName} Settings or the equivalent feature toggle), not that the name is wrong.`
+            : "";
+        return { success: false, message: `${msg}${hint}` };
     }
 }
 export async function queryRecords(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {

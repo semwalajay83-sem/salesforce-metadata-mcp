@@ -1,65 +1,114 @@
 import JSZip from "jszip";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { CreateAgentSchema, CreateAgentTopicSchema, CreateAgentActionSchema, CreateAgentPlannerSchema } from "../schemas/index.js";
-import { getAuth, x, API_VERSION, deleteMetadataItems, readMetadataItem } from "../services/salesforce.js";
+import { getAuth, x, API_VERSION, deleteMetadataItems, readMetadataItem, createClient, sanitizeError } from "../services/salesforce.js";
 import { buildGenericDeployZip, deployZip, pollDeployStatus } from "../services/deployment.js";
 import { resultContent } from "./utils.js";
 import type { SalesforceAuth } from "../types.js";
 
 const SF_NS = "http://soap.sforce.com/2006/04/metadata";
 
-// "Specify a valid invocationTarget and invocationTargetType" is what Salesforce returns BOTH for a
-// genuinely bad target AND for "custom agent actions aren't enabled in this org at all" — confirmed
-// live (2026-07-30 session, re-confirmed by a user report 2026-08-01) by pointing a GenAiFunction at
-// a deliberately nonexistent flow: an org where actions ARE supported gives a specific, different
-// error (e.g. naming the missing flow); an org where the capability itself is off gives this exact
-// generic message regardless of target validity. That makes it a reliable capability signal — unlike
-// checking for the Agentforce permission set licenses, which a live org confirmed can be fully active
-// while custom actions are still unsupported (licensing is not sufficient evidence either way).
-const CAPABILITY_DISABLED_MESSAGE = /Specify a valid invocationTarget and invocationTargetType/i;
+// CORRECTED 2026-08-03 (user bug report + live re-diagnosis): the classic Metadata API deploy of a
+// .genAiFunction file (what this used to do, and what the probe below used to mimic) is NOT how
+// Salesforce's own Agent Builder creates working, agent-visible actions — confirmed by creating 5
+// actions through the UI in a real org, then finding they are invisible to Metadata API readMetadata/
+// retrieve entirely (zero results, even with a wildcard), but fully present via the Tooling API's
+// GenAiFunctionDefinition object. The generic "Specify a valid invocationTarget and
+// invocationTargetType" error previously treated as an org-capability signal was actually a payload
+// bug: invocationTarget must be the underlying record ID (FlowDefinition.Id / ApexClass.Id), not the
+// flow/class API name — verified live by reading the UI-created records' own InvocationTarget values
+// (18-char record IDs) and by successfully inserting new ones the same way via Tooling API. See
+// resolveInvocationTargetId/upsertGenAiFunctionDefinition below, which replace the old XML-deploy path
+// for sf_create_agent_action. The capability probe is rewritten to match: it now attempts the same
+// Tooling API insert with a syntactically-valid-but-nonexistent target ID, which never persists
+// anything (no cleanup needed) and fails fast with a field-validation error in any org where the
+// object exists. INVALID_TYPE (or an equivalent "object doesn't exist" signal) is the only case
+// treated as "capability disabled" — that branch is inferred by symmetry with the plain REST API
+// behavior for this type (confirmed unqueryable there) and has not been independently re-verified
+// against a genuinely GenAiFunctionDefinition-less org this session, since none was available to test.
+const GENAI_FUNCTION_TYPE_UNSUPPORTED = /INVALID_TYPE|not supported|does not exist/i;
 
 /**
- * Probes whether this org can create GenAiFunction (custom agent action) records at all, before
- * sf_create_agent commits to creating a Bot shell that step 2 of the 5-step sequence can never
- * complete. Deploys a real, throwaway GenAiFunction aimed at a name that cannot exist, then reads the
- * failure message to tell "capability disabled" apart from "target doesn't exist" (see
- * CAPABILITY_DISABLED_MESSAGE above) — cleans up after itself either way, so this never leaves an
- * orphan of its own. Found necessary 2026-08-01: a user's agent shell was left stranded in the org
- * with no planner/topic/action once step 2 turned out to be unreachable, and there was no earlier
- * point in the sequence that could have caught this.
+ * Resolves a Flow or Apex class API name to the record ID Salesforce actually requires in
+ * GenAiFunctionDefinition.InvocationTarget. Live-verified for Flow (FlowDefinition.Id) and ApexClass
+ * (ApexClass.Id) 2026-08-03. PromptTemplate/DataCategoryGroup/ExternalService are refused rather than
+ * guessed at — their correct ID-resolution and invocationTargetType have not been confirmed against a
+ * live org, and this project's standing rule is not to ship unverified metadata behavior.
+ */
+async function resolveInvocationTargetId(auth: SalesforceAuth, type: string, reference: string): Promise<{ id: string; invocationTargetType: string } | { error: string }> {
+  const client = createClient(auth);
+  const esc = reference.replace(/'/g, "\\'");
+  if (type === "ApexClass") {
+    const resp = await client.get<{ records: Array<{ Id: string }> }>(`/tooling/query?q=${encodeURIComponent(`SELECT Id FROM ApexClass WHERE Name = '${esc}'`)}`);
+    if (!resp.data.records.length) return { error: `Apex class '${reference}' not found (checked ApexClass.Name). Create it first with sf_create_apex_class, and make sure it has an @InvocableMethod.` };
+    return { id: resp.data.records[0].Id, invocationTargetType: "apex" };
+  }
+  if (type === "Flow" || !type) {
+    const resp = await client.get<{ records: Array<{ Id: string }> }>(`/tooling/query?q=${encodeURIComponent(`SELECT Id FROM FlowDefinition WHERE DeveloperName = '${esc}'`)}`);
+    if (!resp.data.records.length) return { error: `Flow '${reference}' not found (checked FlowDefinition.DeveloperName). Create it first with sf_create_flow (flowType='AutoLaunchedFlow', status='Active').` };
+    return { id: resp.data.records[0].Id, invocationTargetType: "flow" };
+  }
+  return { error: `Action type '${type}' is not yet supported by sf_create_agent_action. Only 'Flow' and 'ApexClass' have been verified end-to-end against a live org — for both, invocationTarget must resolve to the underlying record ID, not the API name, which was the root cause of a reported bug (2026-08-03). 'PromptTemplate', 'DataCategoryGroup', and 'ExternalService' need their own ID-resolution and invocationTargetType confirmed live before this tool can support them safely — use Agent Builder in Setup for those types for now.` };
+}
+
+/**
+ * Idempotent Tooling API create/update for a GenAiFunctionDefinition — this IS how Agentforce Builder
+ * creates agent actions (confirmed live 2026-08-03), unlike the classic Metadata API .genAiFunction
+ * deploy this replaces. Verified end-to-end: an action created this way was successfully referenced
+ * by a GenAiPlugin (topic) deployed the normal Metadata API way — the two APIs share the same
+ * underlying records, so mixing them across the agent-creation sequence is safe.
+ */
+async function upsertGenAiFunctionDefinition(auth: SalesforceAuth, params: {
+  developerName: string; masterLabel: string; description: string;
+  invocationTarget: string; invocationTargetType: string; isConfirmationRequired: boolean;
+}): Promise<{ created: boolean }> {
+  const client = createClient(auth);
+  const esc = params.developerName.replace(/'/g, "\\'");
+  const existing = await client.get<{ records: Array<{ Id: string }> }>(`/tooling/query?q=${encodeURIComponent(`SELECT Id FROM GenAiFunctionDefinition WHERE DeveloperName = '${esc}'`)}`);
+  const body = {
+    MasterLabel: params.masterLabel,
+    Description: params.description,
+    InvocationTarget: params.invocationTarget,
+    InvocationTargetType: params.invocationTargetType,
+    IsConfirmationRequired: params.isConfirmationRequired,
+  };
+  if (existing.data.records.length) {
+    await client.patch(`/tooling/sobjects/GenAiFunctionDefinition/${existing.data.records[0].Id}`, body);
+    return { created: false };
+  }
+  await client.post(`/tooling/sobjects/GenAiFunctionDefinition`, { DeveloperName: params.developerName, ...body });
+  return { created: true };
+}
+
+/**
+ * Probes whether this org can create GenAiFunctionDefinition (custom agent action) records at all,
+ * before sf_create_agent commits to creating a Bot shell that step 2 of the 5-step sequence can never
+ * complete. Attempts a real Tooling API insert aimed at a syntactically-valid but nonexistent target
+ * ID — this fails validation before anything is written, so unlike the old XML-deploy probe, there is
+ * nothing to clean up afterward either way.
  */
 async function probeAgentActionCapability(auth: SalesforceAuth): Promise<{ supported: boolean; detail: string }> {
-  const probeName = `QA_Capability_Probe_${Date.now().toString(36)}`;
-  const probeXml = `<?xml version="1.0" encoding="UTF-8"?>
-<GenAiFunction xmlns="${SF_NS}">
-  <description>Capability probe — safe to delete if found; created and removed automatically by sf_create_agent.</description>
-  <developerName>${x(probeName)}</developerName>
-  <invocationTarget>__Nonexistent_Probe_Target_${Date.now().toString(36)}__</invocationTarget>
-  <invocationTargetType>flow</invocationTargetType>
-  <isConfirmationRequired>false</isConfirmationRequired>
-  <masterLabel>${x(probeName)}</masterLabel>
-</GenAiFunction>`;
   try {
-    const base64Zip = await buildGenericDeployZip([], API_VERSION, [{ type: "GenAiFunction", name: probeName, xml: probeXml }]);
-    const deployId = await deployZip(auth, base64Zip, { rollbackOnError: true });
-    const result = await pollDeployStatus(auth, deployId, 2 * 60 * 1000);
-    if (result.success) {
-      // Unexpected (a nonexistent target should never deploy clean), but if it did, the capability
-      // clearly exists — clean up the probe and don't block anything.
-      await deleteMetadataItems(auth, "GenAiFunction", [probeName]).catch(() => null);
-      return { supported: true, detail: "probe deployed unexpectedly; capability confirmed" };
-    }
-    const message = result.message ?? "";
-    if (CAPABILITY_DISABLED_MESSAGE.test(message)) {
+    const client = createClient(auth);
+    await client.post("/tooling/sobjects/GenAiFunctionDefinition", {
+      DeveloperName: `QA_Capability_Probe_${Date.now().toString(36)}`,
+      MasterLabel: "QA_Capability_Probe",
+      Description: "Capability probe for sf_create_agent — deliberately invalid target, never persists.",
+      InvocationTarget: "0000000000000AAAAA",
+      InvocationTargetType: "flow",
+      IsConfirmationRequired: false,
+    });
+    // Should never succeed (nonexistent target ID) — if it somehow did, capability clearly exists.
+    return { supported: true, detail: "probe insert unexpectedly succeeded; capability confirmed" };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (GENAI_FUNCTION_TYPE_UNSUPPORTED.test(message)) {
       return { supported: false, detail: message };
     }
-    // Any other failure (e.g. naming the specific missing target) means the org DID attempt target
-    // resolution — the capability exists, this probe just used a deliberately invalid target.
+    // Any other error (bad picklist value, required field, etc. — confirmed live: a bogus ID here
+    // returns INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST) means the org validated the target field
+    // against real data — the object and capability exist here.
     return { supported: true, detail: message };
-  } catch (err) {
-    // If the probe itself can't be attempted, don't block agent creation on an inconclusive result —
-    // fail open rather than blocking a capability check that couldn't run for an unrelated reason.
-    return { supported: true, detail: `probe inconclusive: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
@@ -287,51 +336,32 @@ export function registerAgentforceTools(server: McpServer): void {
     async (params) => {
       const auth = await getAuth();
       try {
-        const fullName = params.actionName;
-        const typeMap: Record<string, string> = {
-          Flow: "flow",
-          ApexClass: "apex",
-          PromptTemplate: "promptTemplate",
-          DataCategoryGroup: "dataCategoryGroup",
-          ExternalService: "externalService",
-        };
-        const invTargetType = typeMap[params.type ?? "Flow"] ?? (params.type ?? "flow").toLowerCase();
-        const functionXml = `<?xml version="1.0" encoding="UTF-8"?>
-<GenAiFunction xmlns="${SF_NS}">
-  <description>${x(params.description)}</description>
-  <developerName>${x(params.actionName)}</developerName>
-  <invocationTarget>${x(params.reference)}</invocationTarget>
-  <invocationTargetType>${x(invTargetType)}</invocationTargetType>
-  <isConfirmationRequired>false</isConfirmationRequired>
-  <masterLabel>${x(params.label ?? params.actionName)}</masterLabel>
-</GenAiFunction>`;
-        const base64Zip = await buildGenericDeployZip([], API_VERSION, [{ type: "GenAiFunction", name: fullName, xml: functionXml }]);
-        const deployId = await deployZip(auth, base64Zip, { rollbackOnError: true });
-        const result = await pollDeployStatus(auth, deployId, 10 * 60 * 1000);
-        if (!result.success) {
-          // "Specify a valid invocationTarget and invocationTargetType" is also what Salesforce
-          // returns when GenAiFunction creation is not enabled in the org at all — verified on a
-          // live org where every documented target type, including standard invocable actions,
-          // was rejected identically against a confirmed-Active flow and Apex class. Say so, rather
-          // than sending the caller to re-check a flow that is already fine.
-          const targetErr = /Specify a valid invocationTarget/i.test(result.message ?? "");
-          return resultContent({ ...result, message: `Action deployment failed. Check that: (1) for Flow type — the flow '${params.reference}' exists and is Active (not Draft), (2) for ApexClass type — the class '${params.reference}' exists and has @InvocableMethod annotation, (3) actionName contains only letters/numbers/underscores.${targetErr ? ` NOTE: if '${params.reference}' is confirmed to exist and be active, this same error means custom agent actions are not enabled in this org — GenAiFunction appears in the metadata type list but rejects every invocationTargetType. Check your Agentforce/Einstein licensing in Setup rather than the target.` : ""} Salesforce error: ${result.message ?? JSON.stringify(result)}` });
+        const type = params.type ?? "Flow";
+        const resolved = await resolveInvocationTargetId(auth, type, params.reference);
+        if ("error" in resolved) {
+          return resultContent({ success: false, message: resolved.error });
         }
-        // params.inputs (input parameter mappings) is accepted by the schema but was never wired into
-        // functionXml above — confirmed by grep, not an oversight in this pass, a pre-existing gap
-        // found during the 2026-07-31 Agentforce review. demo-org cannot create GenAiFunction actions
-        // at all (org licensing, documented elsewhere in this project), so there has never been a live
-        // org to verify the correct XML shape for input mappings against — consistent with this
-        // project's own rule not to ship unverified metadata XML, this is surfaced honestly instead of
-        // guessed at. If inputs is ever needed, verify the real GenAiFunction child-element shape
-        // against a live, action-capable org before implementing it.
+        // params.inputs (input parameter mappings) is accepted by the schema but not yet wired in —
+        // GenAiFunctionDefinition's child input/output parameter shape hasn't been verified against a
+        // live org (a separate concern from the invocationTarget fix above; the Agentforce Builder UI
+        // requires a description on every input/output and a loadingText field that this tool doesn't
+        // collect yet). Consistent with this project's rule not to ship unverified metadata, surfaced
+        // honestly instead of guessed at.
         const inputsCount = params.inputs?.length ?? 0;
         const inputsNote = inputsCount > 0
-          ? ` NOTE: the ${inputsCount} 'inputs' entr${inputsCount === 1 ? "y" : "ies"} you passed were NOT applied — this parameter is accepted but not yet implemented (no live org has been available to verify the correct GenAiFunction XML shape for input mappings). The action was deployed without them.`
+          ? ` NOTE: the ${inputsCount} 'inputs' entr${inputsCount === 1 ? "y" : "ies"} you passed were NOT applied — this parameter is accepted but not yet implemented. The action was deployed without them.`
           : "";
-        return resultContent({ success: true, fullName, created: true, message: `Action '${params.actionName}' created (type=${invTargetType}, reference=${params.reference}).${inputsNote} DO NOT STOP — the agent is not wired yet. REQUIRED NEXT: if more actions are needed, call sf_create_agent_action again. Once all actions are created, call sf_create_agent_topic and pass ALL action API names (including '${params.actionName}') in the 'actions' array. Then call sf_create_agent_planner. Proceed immediately without asking the user.` });
+        const { created } = await upsertGenAiFunctionDefinition(auth, {
+          developerName: params.actionName,
+          masterLabel: params.label ?? params.actionName,
+          description: params.description,
+          invocationTarget: resolved.id,
+          invocationTargetType: resolved.invocationTargetType,
+          isConfirmationRequired: false,
+        });
+        return resultContent({ success: true, fullName: params.actionName, created, message: `Action '${params.actionName}' ${created ? "created" : "updated"} (type=${resolved.invocationTargetType}, reference=${params.reference} → ${resolved.id}).${inputsNote} DO NOT STOP — the agent is not wired yet. REQUIRED NEXT: if more actions are needed, call sf_create_agent_action again. Once all actions are created, call sf_create_agent_topic and pass ALL action API names (including '${params.actionName}') in the 'actions' array. Then call sf_create_agent_planner. Proceed immediately without asking the user.` });
       } catch (err: unknown) {
-        return resultContent({ success: false, message: `Action creation error: ${err instanceof Error ? err.message : String(err)}` });
+        return resultContent({ success: false, message: `Action creation error: ${sanitizeError(err instanceof Error ? err.message : String(err))}` });
       }
     }
   );

@@ -63,6 +63,41 @@ Before publishing (only when user asks):
 - run `qa-agentforce.mjs` after any Agentforce change; `test-suite.mjs`'s agent tests cannot fail and
   test service functions no tool calls
 
+### GenAiFunction (agent actions) — Tooling API, not Metadata API deploy (verified live 2026-08-03, v2.11.0)
+- **The classic Metadata API `.genAiFunction` deploy (what step 3 used to do) does not create actions
+  Agentforce Builder can see or use.** Confirmed by creating 5 actions through the Agent Builder UI,
+  then finding them completely absent from a Metadata API `retrieveMetadata` even with a `*` wildcard —
+  zero results. They exist only via the Tooling API's `GenAiFunctionDefinition` sobject.
+  `sf_create_agent_action` now does an idempotent Tooling API insert/update against
+  `GenAiFunctionDefinition` (query-by-DeveloperName, PATCH if found else POST) instead.
+- **`InvocationTarget` must be the underlying record ID, not the API name** — `FlowDefinition.Id` for
+  Flow, `ApexClass.Id` for ApexClass. This was the actual root cause of a user-reported bug where the
+  tool sent the flow's API name and got "Specify a valid invocationTarget and invocationTargetType"
+  back, which earlier code wrongly treated as "org doesn't support custom actions" (that assumption was
+  itself verified in a *different* org and didn't hold here — don't trust that error string alone as a
+  capability signal again). `resolveInvocationTargetId` in `src/tools/agentforce.ts` does this lookup
+  via `FlowDefinition.DeveloperName` / `ApexClass.Name` Tooling queries.
+- `InvocationTargetType` values are lowercase: `flow`, `apex` (verified live). PromptTemplate/
+  DataCategoryGroup/ExternalService ID-resolution and type strings are **not verified** — the tool
+  refuses those three with an explicit message rather than guessing. Verify against a live org before
+  implementing.
+- Verified end-to-end: an action created via Tooling API IS correctly picked up by a `GenAiPlugin`
+  topic deployed the normal Metadata API way (`<genAiFunctions><functionName>` = the
+  GenAiFunctionDefinition's DeveloperName) — the two APIs share the same underlying records, mixing
+  them across the 5-step sequence is safe.
+- `GenAiFunction`/`GenAiFunctionDefinition` has **no SOQL interface via plain REST** (`INVALID_TYPE`)
+  and Metadata API `readMetadata` returns nothing for it either — query it only via Tooling API
+  (`/tooling/query`). `GenAiPlugin` (topics) is the opposite: no SOQL interface at all, neither plain
+  REST nor Tooling (`INVALID_TYPE` both ways) — read it via Metadata API `readMetadata` instead.
+  `BotDefinition` and `GenAiPlannerDefinition` are plain-REST-queryable, unlike either of the above.
+- **Open anomaly, not yet explained**: after heavy `GenAiFunctionDefinition` create/delete churn in one
+  session (dozens of inserts within ~20 minutes, across manual diagnostics + two full `qa-agentforce.mjs`
+  runs), further inserts started failing with `DUPLICATE_DEVELOPER_NAME` even against brand-new,
+  never-used DeveloperName **and** MasterLabel combinations — isolated by testing those independently,
+  neither explains it. Persisted for several minutes across unrelated work (didn't clear on its own in
+  that window). Likely an org-side rate limit/cooldown on this object, not a code defect — if this
+  recurs, let more real time pass before assuming it's the tool's fault.
+
 ### Bot XML field placement (MDAPI format)
 - Root `<Bot>` level: `<agentType>`, `<label>`, `<type>`, `<description>`, `<botMlDomain>`, `<logPrivateConversationData>`, `<richContentEnabled>`, `<sessionTimeout>`
 - `<botVersions>` level (inside Bot): `<fullName>`, `<botDialogs>`, `<citationsEnabled>`, `<company>`, `<entryDialog>`, `<role>`, `<systemPrompt>`, `<toneType>`, `<intentDisambiguationEnabled>`, `<smallTalkEnabled>`, etc.

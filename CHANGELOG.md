@@ -1,5 +1,78 @@
 # Changelog
 
+## [2.11.0] - 2026-08-03
+
+### Fixed — `sf_create_agent_action` was fundamentally broken for Flow/ApexClass-backed actions; the misdiagnosis pointed users at their org's licensing instead of the real bug
+
+Ajay reported that `sf_create_agent_action` failed for `type=Flow` even against a confirmed-Active
+flow, and that the failure message wrongly concluded custom agent actions were unsupported in the org
+("check your Agentforce/Einstein licensing") — disprovable because he had just created five
+Flow-backed actions successfully through Salesforce's own Agentforce Builder UI, in the same org, same
+user, same flows.
+
+**Root cause, found by following Ajay's own recommended debugging path (diff a UI-created action's
+real XML against what the tool generates) and going further once retrieval came back empty:**
+`sf_create_agent_action` built a classic Metadata API `.genAiFunction` deploy with
+`<invocationTarget>` set to the flow/class **API name** — but UI-created actions, read back via the
+Tooling API's `GenAiFunctionDefinition` object (the classic Metadata API's `GenAiFunction` type turned
+out not to expose these records at all — confirmed by a wildcard retrieve finding zero results even
+for the five UI-created ones), showed `InvocationTarget` holding an 18-character **record ID**
+(`FlowDefinition.Id` / `ApexClass.Id`), not a name. The generic "Specify a valid invocationTarget and
+invocationTargetType" error — previously treated as a reliable org-capability signal after testing in
+an unrelated org — turned out to be Salesforce's error for *this exact payload bug* in an org that
+supports the feature just fine.
+
+Fixed by switching `sf_create_agent_action` from the classic Metadata API deploy to a Tooling API
+`GenAiFunctionDefinition` upsert — the same mechanism Agentforce Builder itself uses — resolving
+`reference` to the right record ID first (`FlowDefinition.DeveloperName` → `Id` for Flow,
+`ApexClass.Name` → `Id` for ApexClass). Verified live end-to-end, not just unit-tested: created a real
+action against Ajay's own reported flow through the actual registered tool handler (reproducing his
+repro exactly), confirmed the fix also works for ApexClass, and confirmed a Tooling-API-created action
+is correctly picked up by a topic (`GenAiPlugin`) deployed the normal Metadata-API way — the two APIs
+share the same underlying records, so mixing them across the 5-step agent sequence is safe.
+`PromptTemplate`/`DataCategoryGroup`/`ExternalService` are now honestly refused (clear "not yet
+verified" message) rather than silently deploying an unverified, likely-broken payload — matching this
+project's standing rule not to ship unverified metadata behavior.
+
+**`sf_create_agent`'s pre-flight capability probe (added in v2.10.0)** used the same broken deploy
+path internally, so it always failed and hard-blocked agent creation even in orgs — like this one —
+where it works fine. Rewritten to match: it now attempts a real Tooling API insert with a
+syntactically-valid-but-nonexistent target ID. This fails fast on a specific field-validation error in
+any org where the object exists (verified live: `INVALID_OR_NULL_FOR_RESTRICTED_PICKLIST`), and since
+nothing is ever actually written, there's no cleanup step either — simpler than the old probe, which
+had to deploy-then-delete a throwaway. Verified live: `sf_create_agent` now succeeds normally in this
+org, both with and without `skipActionCapabilityCheck`.
+
+Also fixed: `sf_describe_object` returned a bare `NOT_FOUND` 404 for standard objects whose *feature*
+is disabled (Ajay's repro: `Quote`, when the Quotes feature is off in Setup) — indistinguishable from a
+typo'd or nonexistent object name. Added a hint for a hardcoded list of commonly feature-gated standard
+objects (Quote, Contract, Order, Campaign, Territory2, WorkOrder, ServiceAppointment, etc.) pointing at
+Setup instead of sending the user hunting for a naming mistake that isn't there.
+
+**`qa-agentforce.mjs` needed a substantial rewrite, not just the tool code.** The suite's own
+assertions were written under the same now-disproven assumption ("demo-org cannot create GenAiFunction
+actions") baked into skip logic throughout — so the action/topic verification paths had never actually
+executed in any prior session, and once they finally ran (because the underlying bug they were gated
+behind is now fixed), they surfaced a second, independent, pre-existing gap: `existsInOrg`'s plain REST
+`queryRecords` can't see `GenAiFunction`/`GenAiFunctionDefinition` (Tooling-API-only, confirmed) or
+`GenAiPlugin` (no SOQL interface at all, confirmed both plain REST and Tooling — only readable via
+classic Metadata API `readMetadata`) — it happened to work before only because those checks were never
+reached. Rewrote `existsInOrg` to dispatch to the right API per type, and rewrote the action-type
+matrix check to read `GenAiFunctionDefinition.InvocationTargetType` back via Tooling API instead of a
+`retrieveMetadata` call that (per the finding above) was always going to come back empty. Suite went
+from 33 passed/15 failed (pre-fix) to 35 passed/2 failed against a live org.
+
+**Known open item, not a code defect:** after extensive live testing today (mine plus Ajay's own
+UI-based testing), further `GenAiFunctionDefinition` inserts in `demo-org` started failing with
+`DUPLICATE_DEVELOPER_NAME` ("...already exists or has been previously used") even against
+brand-new, never-used developer names and master labels — isolated by testing fresh-name/reused-label
+and fresh-everything/reused-target combinations independently; neither explains it, and the condition
+persisted for several minutes and across unrelated work. Most likely an org-side rate limit or cooldown
+on this object triggered by the volume of creates/deletes during today's testing, not a regression in
+this fix — the two remaining `qa-agentforce.mjs` failures are this condition surfacing honestly through
+the tool's real error message, not a masked defect. Re-run the suite after some time has passed to
+confirm it clears; if it doesn't, this needs further investigation as a genuine platform limit.
+
 ## [2.10.0] - 2026-08-01
 
 ### Fixed/Added — 4 more findings from an extended manual test session (Bugs 6-8, and a sharper Bug 3), plus 2 new tools
