@@ -90,13 +90,38 @@ Before publishing (only when user asks):
   (`/tooling/query`). `GenAiPlugin` (topics) is the opposite: no SOQL interface at all, neither plain
   REST nor Tooling (`INVALID_TYPE` both ways) — read it via Metadata API `readMetadata` instead.
   `BotDefinition` and `GenAiPlannerDefinition` are plain-REST-queryable, unlike either of the above.
-- **Open anomaly, not yet explained**: after heavy `GenAiFunctionDefinition` create/delete churn in one
-  session (dozens of inserts within ~20 minutes, across manual diagnostics + two full `qa-agentforce.mjs`
-  runs), further inserts started failing with `DUPLICATE_DEVELOPER_NAME` even against brand-new,
-  never-used DeveloperName **and** MasterLabel combinations — isolated by testing those independently,
-  neither explains it. Persisted for several minutes across unrelated work (didn't clear on its own in
-  that window). Likely an org-side rate limit/cooldown on this object, not a code defect — if this
-  recurs, let more real time pass before assuming it's the tool's fault.
+- **`DUPLICATE_DEVELOPER_NAME` on brand-new names — root cause found and fixed 2026-08-03: it was
+  accumulated QA junk, not a rate limit.** The earlier guess in this file (rate limit/cooldown) was
+  wrong — proven by cleaning up ~45 leftover QA `Bot`/`GenAiPlannerBundle`/`GenAiPlugin`/
+  `GenAiFunctionDefinition` records and confirming a fresh insert then succeeded immediately, no
+  waiting required. The actual mechanism is still fuzzy (Salesforce's error text is generic and
+  doesn't name a real conflicting record), but org-wide accumulation of this metadata is the trigger —
+  if this recurs, clean up old QA artifacts first, don't wait it out.
+- **`Bot` deletion via the Metadata API is a hard, unconditional wall in this org** — confirmed live:
+  all 19 leftover QA bots failed identically with a generic "unexpected error occurred," including ones
+  tested in complete isolation (single-bot destructiveChanges deploy, nothing else in the batch). Not
+  fixable from this codebase; per-agent deletion needs Setup → Agentforce Studio → the agent → Delete.
+  Corroborates the earlier, narrower note in [[salesforce-mcp-qa-state]] about "~8 stuck Bots" — turns
+  out to be much closer to *all* Bots in this org, not a handful of specific old ones.
+- **Workaround for the resulting dependency lock, when a stuck Bot still holds a planner link**:
+  Bot→Planner→Plugin→Function is a strict deletion order (each layer must have zero remaining
+  references before it can be deleted), and a Bot you can't delete still blocks deleting its planner.
+  Fix: **redeploy** (not delete) the Bot via a normal Metadata API upsert, using a minimal `.bot` XML
+  with no `<conversationDefinitionPlanners>` element — this overwrites the link without needing to
+  delete the Bot record itself. Verified live: freed up 2 planners this way. The orphaned Bot shell
+  stays (harmless, just clutter) but everything beneath it becomes deletable.
+- **Some Bot/planner-linked records return `<records xsi:nil="true"/>` from `readMetadata` even though
+  they exist and are fully functional** — hit this for recently-created, fully-wired bots (ones that
+  went through the complete 5-step sequence including the planner link) and, separately, for one with
+  an ampersand in its label. Don't assume `nil` means "no link" when deciding whether to sever one —
+  it means "unreadable," which is different. When in doubt, redeploy the minimal no-planner XML anyway;
+  it's harmless whether or not a link existed.
+- **A `GenAiPlugin` can also get permanently stuck** on a bare "setup object in use" with no clear
+  referencing record (unlike the normal "referenced elsewhere: <specific record>" message) — one
+  instance found 2026-08-03, survived deleting every function it referenced and every planner that once
+  referenced it. Suspected cause: Salesforce's own internal planner↔topic↔function junction records may
+  not always get cleaned up when the parent planner is deleted via the Metadata API, leaving an orphaned
+  reference this project has no visibility into. Same "needs Setup UI" conclusion as stuck Bots.
 
 ### Bot XML field placement (MDAPI format)
 - Root `<Bot>` level: `<agentType>`, `<label>`, `<type>`, `<description>`, `<botMlDomain>`, `<logPrivateConversationData>`, `<richContentEnabled>`, `<sessionTimeout>`
