@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.11.1] - 2026-08-03
+
+### Fixed — `sf_retrieve_metadata` reported success on zero-result retrieves, plus two dead parameters found while investigating
+
+Ajay's follow-up report confirmed v2.11.0's `sf_create_agent_action`/`sf_describe_object` fixes were
+correct — his contradicting evidence turned out to be tested against a stale Claude Desktop MCP
+subprocess predating the rebuild (a recurring gotcha this project has hit before: a rebuilt `dist/`
+only takes effect after a full restart). His genuinely new finding, independent of that mix-up, was
+real: `sf_retrieve_metadata` returned `success: true` and `"Retrieved 1 file(s)."` for a retrieve that
+found **zero** of the requested components — because Salesforce's retrieve zip always includes
+`package.xml` as its own manifest even when every requested member comes back empty, and the file count
+included it. Verified with his exact repro (4 nonexistent `GenAiFunction` names) against a control
+retrieve of a real component.
+
+Fixed in `retrieveMetadataAndWait`: the reported count now excludes `package.xml`, and when components
+were requested by name but none came back, the result is `success: false` with an explicit message
+listing what was requested — instead of a misleadingly cheerful count of a manifest nobody asked for.
+
+**Investigating this surfaced two more, more severe versions of the same underlying problem**, both
+previously untested: the tool's schema has advertised `metadataType`+`componentName` (single-component
+shortcut) and `packageXml` (raw manifest) as alternatives to `components` since this tool existed, but
+the handler only ever read `params.components` — the other two were silently no-ops. A call using
+either form retrieved **nothing at all** (an empty `<unpackaged>` body) while still reporting a
+"successful" retrieve of the manifest-only zip, even when the requested component genuinely existed.
+Wired up both: `metadataType`/`componentName` now builds a single-item `components` array, and
+`packageXml` now extracts the `<types>`/`<version>` content from the supplied document and uses it
+directly as the retrieve request body (needs the `met:` namespace prefix added to every element, since
+the SOAP body has no default namespace, unlike a standalone package.xml). Verified live for all three
+paths: the shortcut form now retrieves a real flow's XML, the zero-match array form now fails honestly,
+and a hand-written raw `packageXml` retrieve returns real content.
+
+No regressions: `test-suite.mjs` 209/212 (2 pre-existing unrelated failures, same as before).
+
 ## [2.11.0] - 2026-08-03
 
 ### Fixed — `sf_create_agent_action` was fundamentally broken for Flow/ApexClass-backed actions; the misdiagnosis pointed users at their org's licensing instead of the real bug

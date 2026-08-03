@@ -14,6 +14,7 @@ import {
   pollDeployStatus,
   checkDeployStatus,
   retrieveMetadataAndWait,
+  extractPackageXmlInner,
 } from "../services/deployment.js";
 import {
   createOutboundChangeSet,
@@ -116,13 +117,27 @@ export function registerDeploymentTools(server: McpServer): void {
     "sf_retrieve_metadata",
     {
       title: "Retrieve Metadata",
-      description: `Retrieves metadata components from the org and returns their actual file contents. Use this to read existing configuration before making changes, to back up metadata, or to check what is really deployed rather than what you think is deployed. Waits for the async retrieve to finish and unpacks the resulting zip, returning each file's path and source. Large files are truncated.`,
+      description: `Retrieves metadata components from the org and returns their actual file contents. Use this to read existing configuration before making changes, to back up metadata, or to check what is really deployed rather than what you think is deployed. Waits for the async retrieve to finish and unpacks the resulting zip, returning each file's path and source. Large files are truncated. Accepts 'components' (array), or 'metadataType'+'componentName' as a single-item shortcut, or a raw 'packageXml' document — provide exactly one form.`,
       inputSchema: RetrieveMetadataSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     async (params) => {
       const auth = await getAuth();
-      const result = await retrieveMetadataAndWait(auth, params.components ?? []);
+      // metadataType/componentName and packageXml were accepted by the schema but silently ignored —
+      // found 2026-08-03 while investigating a related report (Finding 2: zero-result retrieves
+      // reporting false success). A call using either form always retrieved literally nothing (empty
+      // <unpackaged> body) while still reporting a "successful" retrieve of the manifest-only zip —
+      // the same misleading-success shape as Finding 2, just via a different, previously-untested path.
+      if (params.packageXml) {
+        const result = await retrieveMetadataAndWait(auth, [], undefined, { rawUnpackagedXml: extractPackageXmlInner(params.packageXml) });
+        return resultContent(result);
+      }
+      const components = (params.components && params.components.length > 0)
+        ? params.components
+        : (params.metadataType && params.componentName)
+          ? [{ type: params.metadataType, name: params.componentName }]
+          : (params.components ?? []);
+      const result = await retrieveMetadataAndWait(auth, components);
       return resultContent(result);
     }
   );

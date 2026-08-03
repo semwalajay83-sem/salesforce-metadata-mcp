@@ -320,30 +320,62 @@ export async function pollRetrieveStatus(
   }
 }
 
-/** Starts a retrieve and waits for the files, which is what a caller almost always wants. */
+/**
+ * Starts a retrieve and waits for the files, which is what a caller almost always wants.
+ *
+ * Reports honestly when nothing was actually found (reported 2026-08-03: this used to return
+ * success:true / "Retrieved 1 file(s)." for a retrieve that found zero of the requested components —
+ * Salesforce's retrieve zip always contains package.xml as its own manifest even when every requested
+ * member came back empty, and the old code counted that manifest as a retrieved "file"). Now excludes
+ * package.xml from the count and, when components were requested by name but none of them came back,
+ * returns success:false with an explicit message rather than a misleadingly cheerful file count —
+ * verified live: a real component still reports success normally; a request for nonexistent
+ * GenAiFunction members now fails clearly instead of silently "succeeding" with just the manifest.
+ */
 export async function retrieveMetadataAndWait(
   auth: SalesforceAuth,
   components: Array<{ type: string; name: string }>,
-  timeoutMs = 5 * 60 * 1000
+  timeoutMs = 5 * 60 * 1000,
+  options?: { rawUnpackagedXml?: string }
 ): Promise<ToolResult & { files?: Array<{ path: string; content: string }> }> {
-  const started = await retrieveMetadata(auth, components);
+  const started = await retrieveMetadata(auth, components, options);
   if (!started.success || !started.fullName) return started;
-  return pollRetrieveStatus(auth, started.fullName, timeoutMs);
+  const result = await pollRetrieveStatus(auth, started.fullName, timeoutMs);
+  if (!result.success) return result;
+
+  const componentFiles = (result.files ?? []).filter(f => !/(^|\/)package\.xml$/.test(f.path));
+  if (components.length > 0 && componentFiles.length === 0) {
+    return {
+      ...result,
+      success: false,
+      message: `Retrieved 0 of ${components.length} requested component(s) — none were found (only the empty package.xml manifest came back). Requested: ${components.map(c => `${c.type}:${c.name}`).join(", ")}. Check the type/name are exact, and that the type is visible via this API — some newer metadata types aren't (see CLAUDE.md's GenAiFunction notes for a documented example).`,
+    };
+  }
+  return {
+    ...result,
+    message: components.length > 0
+      ? `Retrieved ${componentFiles.length} file(s) for ${components.length} requested component(s).`
+      : result.message,
+  };
 }
 
 export async function retrieveMetadata(
   auth: SalesforceAuth,
-  components: Array<{ type: string; name: string }>
+  components: Array<{ type: string; name: string }>,
+  options?: { rawUnpackagedXml?: string }
 ): Promise<ToolResult> {
-  const typeMap = new Map<string, string[]>();
-  for (const c of components) {
-    const existing = typeMap.get(c.type) ?? [];
-    existing.push(c.name);
-    typeMap.set(c.type, existing);
+  let typesXml = options?.rawUnpackagedXml;
+  if (typesXml === undefined) {
+    const typeMap = new Map<string, string[]>();
+    for (const c of components) {
+      const existing = typeMap.get(c.type) ?? [];
+      existing.push(c.name);
+      typeMap.set(c.type, existing);
+    }
+    typesXml = [...typeMap.entries()].map(([name, members]) =>
+      members.map(m => `<met:types><met:members>${m}</met:members><met:name>${name}</met:name></met:types>`).join("\n")
+    ).join("\n");
   }
-  const typesXml = [...typeMap.entries()].map(([name, members]) =>
-    members.map(m => `<met:types><met:members>${m}</met:members><met:name>${name}</met:name></met:types>`).join("\n")
-  ).join("\n");
 
   const bodyInner = `
     <met:retrieve>
@@ -364,9 +396,25 @@ export async function retrieveMetadata(
     }
     return {
       success: true, fullName: idMatch[1], created: false,
-      message: `Retrieve initiated. Async ID: ${idMatch[1]}. Components: ${components.map(c => `${c.type}:${c.name}`).join(", ")}`
+      message: `Retrieve initiated. Async ID: ${idMatch[1]}. Components: ${components.length > 0 ? components.map(c => `${c.type}:${c.name}`).join(", ") : "(raw package.xml)"}`
     };
   } catch (err: unknown) {
     return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
   }
+}
+
+/**
+ * Extracts the <types>/<version> content of a full package.xml document, for use as the retrieve
+ * request's <unpackaged> body — the two share the same inner structure, but a normal package.xml
+ * relies on <Package>'s own default xmlns for its elements to resolve into the metadata namespace,
+ * which stripping the <Package> wrapper removes. The retrieve SOAP body (see callMetadataSoap) only
+ * declares that namespace under the `met:` prefix and has no default xmlns, so every element needs
+ * `met:` added to resolve correctly — normalizes away any pre-existing `met:` prefix first so this is
+ * safe to call whether or not the caller already prefixed their XML.
+ */
+export function extractPackageXmlInner(packageXml: string): string {
+  const match = packageXml.match(/<Package[^>]*>([\s\S]*?)<\/Package>/);
+  if (!match) throw new Error("packageXml must contain a <Package>...</Package> element.");
+  const normalized = match[1].replace(/<(\/?)met:/g, "<$1");
+  return normalized.replace(/<(\/?)(\w+)/g, "<$1met:$2");
 }
