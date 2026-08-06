@@ -1,6 +1,6 @@
 {
   "name": "salesforce-metadata-mcp",
-  "version": "2.11.1",
+  "version": "2.11.2",
   "description": "The only Salesforce MCP with Agentforce, OmniStudio & DevOps Center tools — 223 tools total: objects, flows, Apex (create + read), schema describe, debug logs, permissions, reports, Experience Cloud, Einstein AI.",
   "mcpName": "io.github.semwalajay83-sem/salesforce-metadata-mcp",
   "license": "MIT",
@@ -108,7 +108,7 @@
     "forecast-hierarchy"
   ],
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.29.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "cross-spawn": "^7.0.6",
     "jszip": "3.10.1",
     "zod": "3.25.76"

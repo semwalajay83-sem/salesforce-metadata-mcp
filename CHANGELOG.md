@@ -1,5 +1,57 @@
 # Changelog
 
+## [2.11.2] - 2026-08-06
+
+### Security — resolved all 5 production-dependency advisories (2 high, 3 moderate)
+
+`@modelcontextprotocol/sdk` bumped `1.29.0` → `1.30.0` (minor, non-breaking). Every advisory traced
+back to that one dependency:
+
+| Package | Advisory | Severity |
+|---|---|---|
+| `@modelcontextprotocol/sdk` | vulnerable range 1.25.0–1.29.0 | moderate |
+| `@hono/node-server` | path traversal in `serve-static` on Windows via encoded backslash (`%5C`) | moderate |
+| `hono` | ReDoS in CORS middleware via `Access-Control-Request-Headers` | moderate |
+| `ip-address` | leading-zero octet / CIDR-suffix / IPv4-mapped-IPv6 parsing bugs enabling SSRF and trust-boundary bypass (3 advisories) | high |
+| `fast-uri` | host confusion via backslash authority introducer | high |
+
+Only two of these actually required a change here. `hono`, `fast-uri`, and `ip-address` sit under
+parent ranges (`^4.11.4`, `^3.0.1`, `^10.2.0`) that already admit their patched versions, so any fresh
+install resolves them safely regardless of what this repo's lockfile happens to pin. `@hono/node-server`
+did not: SDK 1.29.0 constrained it to `^1.19.9`, which cannot reach the patched 2.0.5. SDK 1.30.0
+widens that to `^1.19.9 || ^2.0.5`. The SDK's own advisory needed the bump too.
+
+**Note on why the lockfile is not the fix.** This package is a library — consumers resolve from the
+`dependencies` ranges in `package.json` at install time and never see `package-lock.json`. Running
+`npm audit fix` alone would have cleaned the local `npm audit` output while changing nothing for
+anyone installing from npm. The dependency bump is what actually reaches users, and only once
+published.
+
+Resolved after the bump: `@modelcontextprotocol/sdk` 1.30.0, `@hono/node-server` 2.1.0, `hono` 4.13.0,
+`fast-uri` 3.1.5, `ip-address` 10.4.0. `npm audit` reports 0 vulnerabilities for both production and
+full trees.
+
+Verified beyond the audit output, since the SDK is the protocol layer and a clean `tsc` proves nothing
+about runtime: **stdio** transport handshakes and lists 223 tools; **HTTP** transport (`TRANSPORT=http`)
+serves `/health`, completes an `initialize` over `/mcp`, 404s unknown paths, and still binds
+`127.0.0.1` by default (the v2.8.8 hardening is intact — this mattered to check, as the changed
+packages are exactly the ones behind that transport); and a real `tools/call` round-trip dispatches
+through zod validation into the handler, failing only at the expected credentials boundary.
+
+### Fixed — server advertised a stale hardcoded version to MCP clients
+
+`src/index.ts` hardcoded the version in four places (`McpServer` init, both startup banners, the
+`/health` payload) and was never bumped for v2.11.0 or v2.11.1, so the server reported **2.10.0** in
+its `initialize` response while `package.json` said 2.11.1. Now read from `package.json` at runtime via
+`createRequire(import.meta.url)`, so it cannot drift again. A direct JSON import is not viable here:
+`package.json` sits outside `tsconfig`'s `rootDir` (`./src`), so importing it would restructure `dist/`.
+
+### Docs
+
+Corrected the tool count in `QUICKSTART.md` (212 → 223) and in the GitHub repository description
+(212 → 223). Both had drifted for the same reason: neither ships in the npm tarball, so publishing
+never surfaces them the way it does `README.md`/`TOOLS.md`/`package.json`.
+
 ## [2.11.1] - 2026-08-03
 
 ### Fixed — `sf_retrieve_metadata` reported success on zero-result retrieves, plus two dead parameters found while investigating
