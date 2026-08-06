@@ -3,11 +3,19 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
+import { createRequire } from "module";
 import { registerTools } from "./tools/index.js";
+
+// Single source of truth for the version. Hardcoding it here drifted from package.json across
+// v2.11.0/v2.11.1 (the server advertised 2.10.0 to clients while the package said 2.11.1), so read
+// it at runtime instead. dist/index.js → ../package.json resolves correctly both in the repo and
+// when installed as node_modules/salesforce-metadata-mcp/dist/index.js.
+const require = createRequire(import.meta.url);
+const { version: VERSION } = require("../package.json") as { version: string };
 
 const server = new McpServer({
   name: "salesforce-metadata-mcp",
-  version: "2.10.0",
+  version: VERSION,
 });
 
 registerTools(server);
@@ -17,7 +25,7 @@ registerTools(server);
 async function runStdio(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Salesforce Metadata MCP server v2.10.0 running on stdio");
+  console.error(`Salesforce Metadata MCP server v${VERSION} running on stdio`);
 }
 
 // ─── Transport: HTTP ──────────────────────────────────────────────────────────
@@ -53,7 +61,7 @@ async function runHTTP(): Promise<void> {
 
     if (url === "/health" && req.method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", server: "salesforce-metadata-mcp", version: "2.10.0" }));
+      res.end(JSON.stringify({ status: "ok", server: "salesforce-metadata-mcp", version: VERSION }));
       return;
     }
 
@@ -81,7 +89,7 @@ async function runHTTP(): Promise<void> {
   });
 
   httpServer.listen(port, host, () => {
-    console.error(`Salesforce Metadata MCP server v2.10.0 running on http://${host}:${port}/mcp`);
+    console.error(`Salesforce Metadata MCP server v${VERSION} running on http://${host}:${port}/mcp`);
   });
 }
 
