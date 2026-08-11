@@ -55,7 +55,26 @@ import type {
   ToolResult,
 } from "../types.js";
 
-export const API_VERSION = "66.0";
+const DEFAULT_API_VERSION = "66.0";
+
+/**
+ * Salesforce REST/Tooling/Metadata API version used by every call in this server.
+ *
+ * Overridable via `SF_API_VERSION` because the two directions of drift have opposite fixes: a *newer*
+ * org may expose objects this default cannot see, while a *sandbox mid-upgrade* (or an org on a
+ * slower release track) can reject a version it does not yet serve. Neither is fixable by the caller
+ * without this knob. The format is validated rather than trusted — an unparseable value silently
+ * 404s every endpoint, which is a miserable thing to debug.
+ */
+export const API_VERSION: string = (() => {
+  const raw = (process.env["SF_API_VERSION"] ?? "").trim();
+  if (!raw) return DEFAULT_API_VERSION;
+  if (!/^\d{2,3}\.\d$/.test(raw)) {
+    console.error(`Ignoring SF_API_VERSION='${raw}' — expected a form like '66.0'. Falling back to ${DEFAULT_API_VERSION}.`);
+    return DEFAULT_API_VERSION;
+  }
+  return raw;
+})();
 
 // ─── Token cache ──────────────────────────────────────────────────────────────
 let cachedToken: { accessToken: string; expiresAt: number } | null = null;
@@ -227,6 +246,86 @@ async function getFreshTokenFromOAuth(
 }
 
 /**
+ * OAuth 2.0 Client Credentials Flow — a server-to-server grant with no user interaction and no
+ * refresh token to store. Requires a "Run As" user configured on the Connected App / External
+ * Client App in Setup; without one Salesforce returns `invalid_grant`, which is surfaced verbatim
+ * below because the fix is entirely org-side and unguessable from the generic message.
+ */
+async function getTokenFromClientCredentials(
+  instanceUrl: string,
+  clientId: string,
+  clientSecret: string
+): Promise<string> {
+  const response = await fetchWithTimeout(
+    `${instanceUrl}/services/oauth2/token`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "client_credentials",
+        client_id: clientId,
+        client_secret: clientSecret,
+      }).toString(),
+    },
+    30_000
+  );
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(
+      `Client-credentials token request failed with HTTP ${response.status}. ${text.slice(0, 200)} ` +
+      `If this is 'invalid_grant', the Connected App has no "Run As" user set (Setup -> the app -> Manage -> Edit Policies -> Client Credentials Flow).`
+    );
+  }
+  const data = await response.json() as { access_token?: string };
+  if (!data.access_token) throw new Error("No access_token in client-credentials response.");
+  return data.access_token;
+}
+
+/**
+ * Username/password (SOAP-era "password grant"). Lowest-friction path for someone trying the server
+ * for the first time, and the one every competing Salesforce MCP offers — hence its presence here.
+ *
+ * It is deliberately placed near the END of the auth chain: it sends a standing password on every
+ * cold start, cannot be scoped, and is disabled outright in many orgs. Anything stronger that is
+ * configured should win over it.
+ */
+async function getTokenFromPassword(
+  instanceUrl: string,
+  clientId: string,
+  clientSecret: string,
+  username: string,
+  password: string,
+  securityToken: string
+): Promise<string> {
+  const response = await fetchWithTimeout(
+    `${instanceUrl}/services/oauth2/token`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "password",
+        client_id: clientId,
+        client_secret: clientSecret,
+        username,
+        // Salesforce expects the security token appended directly to the password, with no separator.
+        password: `${password}${securityToken}`,
+      }).toString(),
+    },
+    30_000
+  );
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(
+      `Username/password token request failed with HTTP ${response.status}. ${text.slice(0, 200)} ` +
+      `Common causes: missing SF_SECURITY_TOKEN (required unless your IP is allowlisted), or the org has disabled the password grant.`
+    );
+  }
+  const data = await response.json() as { access_token?: string };
+  if (!data.access_token) throw new Error("No access_token in username/password response.");
+  return data.access_token;
+}
+
+/**
  * Exchanges a JWT assertion for an access token via the Salesforce JWT Bearer Flow.
  * Does not require browser auth or SF CLI — works headless on any Node.js version.
  *
@@ -333,6 +432,52 @@ export async function getAuth(): Promise<SalesforceAuth> {
     }
   }
 
+  // Client-credentials is gated on refreshToken being ABSENT on purpose. It shares SF_CLIENT_ID and
+  // SF_CLIENT_SECRET with the refresh-token flow above, so testing it unconditionally would hijack
+  // every existing refresh-token setup and silently change which user the server acts as.
+  if (clientId && clientSecret && !refreshToken) {
+    const now = Date.now();
+    if (cachedToken && now < cachedToken.expiresAt) {
+      return { instanceUrl: base, accessToken: cachedToken.accessToken };
+    }
+    try {
+      const accessToken = await getTokenFromClientCredentials(base, clientId, clientSecret);
+      cachedToken = { accessToken, expiresAt: now + TOKEN_TTL_MS };
+      return { instanceUrl: base, accessToken };
+    } catch (err) {
+      console.error(
+        "Client-credentials auth failed, trying next strategy:",
+        redactSensitive(err instanceof Error ? err.message : String(err))
+      );
+    }
+  }
+
+  const username = readEnv("SF_USERNAME", 255);
+  const password = readEnv("SF_PASSWORD", 255);
+  if (username && password) {
+    if (!clientId || !clientSecret) {
+      console.error(
+        "SF_USERNAME/SF_PASSWORD are set but SF_CLIENT_ID/SF_CLIENT_SECRET are not — the password grant needs a Connected App's consumer key and secret. Skipping."
+      );
+    } else {
+      const now = Date.now();
+      if (cachedToken && now < cachedToken.expiresAt) {
+        return { instanceUrl: base, accessToken: cachedToken.accessToken };
+      }
+      try {
+        const securityToken = readEnv("SF_SECURITY_TOKEN", 255) ?? "";
+        const accessToken = await getTokenFromPassword(base, clientId, clientSecret, username, password, securityToken);
+        cachedToken = { accessToken, expiresAt: now + TOKEN_TTL_MS };
+        return { instanceUrl: base, accessToken };
+      } catch (err) {
+        console.error(
+          "Username/password auth failed, trying next strategy:",
+          redactSensitive(err instanceof Error ? err.message : String(err))
+        );
+      }
+    }
+  }
+
   const alias = readEnv("SF_ALIAS", 50);
   if (alias) {
     try {
@@ -354,7 +499,9 @@ export async function getAuth(): Promise<SalesforceAuth> {
 
   throw new Error(
     "No Salesforce credentials found. Set SF_JWT_CLIENT_ID + SF_JWT_KEY_FILE + SF_JWT_USERNAME, " +
-    "or SF_CLIENT_ID + SF_CLIENT_SECRET + SF_REFRESH_TOKEN, or SF_ALIAS, or SF_ACCESS_TOKEN."
+    "or SF_CLIENT_ID + SF_CLIENT_SECRET + SF_REFRESH_TOKEN, or SF_CLIENT_ID + SF_CLIENT_SECRET " +
+    "(client credentials), or SF_CLIENT_ID + SF_CLIENT_SECRET + SF_USERNAME + SF_PASSWORD " +
+    "[+ SF_SECURITY_TOKEN], or SF_ALIAS, or SF_ACCESS_TOKEN."
   );
 }
 
@@ -516,8 +663,20 @@ export function x(str: string | null | undefined): string {
  * e.g. `sf_get_field_history`'s recordId, DevOps tools' workItemId). Also strips backslashes first,
  * since an unescaped trailing backslash could otherwise consume the escaped quote's own backslash.
  */
-function soqlEscape(str: string | null | undefined): string {
+export function soqlEscape(str: string | null | undefined): string {
   return String(str ?? "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+/**
+ * Translates a user-facing glob (`*` = any run, `?` = one character) into a SOQL LIKE pattern.
+ *
+ * Order matters and is the whole reason this is a named function: quote/backslash escaping runs
+ * first, then LIKE's own metacharacters (`%` and `_`) are escaped so a literal underscore in a class
+ * name such as `Account_Helper` cannot act as a single-character wildcard, and only then are the
+ * caller's globs converted. Doing these in any other order lets one pass corrupt the next.
+ */
+export function wildcardToSoqlLike(pattern: string): string {
+  return soqlEscape(pattern).replace(/%/g, "\\%").replace(/_/g, "\\_").replace(/\*/g, "%").replace(/\?/g, "_");
 }
 
 /**
@@ -3252,65 +3411,18 @@ export async function getAgentLogs(auth: SalesforceAuth, params: Record<string, 
 
 // ─── v2.2.0 Service Functions ─────────────────────────────────────────────────
 // Objects & Fields
-export async function updateCustomObject(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
-    try {
-        const objectName = params.objectApiName ?? params.fullName;
-        const readXml = await callMetadataSoap(auth, "readMetadata", `<met:readMetadata><met:type>CustomObject</met:type><met:fullNames>${x(objectName)}</met:fullNames></met:readMetadata>`);
-        const recordMatch = readXml.match(/<records[^>]*>([\s\S]*?)<\/records>/i);
-        if (!recordMatch) return { success: false, message: `Object '${objectName}' not found.` };
-        let inner = recordMatch[1];
-        if (params.label) inner = inner.replace(/<label>[^<]*<\/label>/i, `<label>${x(params.label)}</label>`);
-        if (params.pluralLabel) inner = inner.replace(/<pluralLabel>[^<]*<\/pluralLabel>/i, `<pluralLabel>${x(params.pluralLabel)}</pluralLabel>`);
-        if (params.description !== undefined) {
-            if (inner.includes("<description>")) inner = inner.replace(/<description>[^<]*<\/description>/i, `<description>${x(params.description)}</description>`);
-            else inner += `\n    <met:description>${x(params.description)}</met:description>`;
-        }
-        if (params.enableHistory !== undefined) inner = inner.includes("<enableHistory>") ? inner.replace(/<enableHistory>[^<]*<\/enableHistory>/i, `<enableHistory>${params.enableHistory}</enableHistory>`) : inner + `\n    <met:enableHistory>${params.enableHistory}</met:enableHistory>`;
-        if (params.enableReports !== undefined) inner = inner.includes("<enableReports>") ? inner.replace(/<enableReports>[^<]*<\/enableReports>/i, `<enableReports>${params.enableReports}</enableReports>`) : inner + `\n    <met:enableReports>${params.enableReports}</met:enableReports>`;
-        if (params.enableActivities !== undefined) inner = inner.includes("<enableActivities>") ? inner.replace(/<enableActivities>[^<]*<\/enableActivities>/i, `<enableActivities>${params.enableActivities}</enableActivities>`) : inner + `\n    <met:enableActivities>${params.enableActivities}</met:enableActivities>`;
-        if (params.enableSearch !== undefined) inner = inner.includes("<enableSearch>") ? inner.replace(/<enableSearch>[^<]*<\/enableSearch>/i, `<enableSearch>${params.enableSearch}</enableSearch>`) : inner + `\n    <met:enableSearch>${params.enableSearch}</met:enableSearch>`;
-        const xml = `<met:metadata xsi:type="met:CustomObject" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    ${inner}
-</met:metadata>`;
-        return await upsertMetadata(auth, xml);
-    } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
-    }
-}
-export async function updateCustomField(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
-    try {
-        const objectApiName = params.objectApiName ?? params.objectName ?? "";
-        const fieldApiName = params.fieldApiName ?? params.fieldName ?? "";
-        const fullName = `${objectApiName}.${fieldApiName}`;
-        const readXml = await callMetadataSoap(auth, "readMetadata", `<met:readMetadata><met:type>CustomField</met:type><met:fullNames>${x(fullName)}</met:fullNames></met:readMetadata>`);
-        const recordMatch = readXml.match(/<records[^>]*>([\s\S]*?)<\/records>/i);
-        if (!recordMatch) return { success: false, message: `Field '${fullName}' not found.` };
-        let inner = recordMatch[1];
-        if (params.label) inner = inner.replace(/<label>[^<]*<\/label>/i, `<label>${x(params.label)}</label>`);
-        if (params.description !== undefined) {
-            if (inner.includes("<description>")) inner = inner.replace(/<description>[^<]*<\/description>/i, `<description>${x(params.description)}</description>`);
-            else inner += `\n<description>${x(params.description)}</description>`;
-        }
-        if (params.helpText !== undefined) {
-            if (inner.includes("<inlineHelpText>")) inner = inner.replace(/<inlineHelpText>[^<]*<\/inlineHelpText>/i, `<inlineHelpText>${x(params.helpText)}</inlineHelpText>`);
-            else inner += `\n<inlineHelpText>${x(params.helpText)}</inlineHelpText>`;
-        }
-        if (params.required !== undefined) {
-            if (inner.includes("<required>")) inner = inner.replace(/<required>[^<]*<\/required>/i, `<required>${params.required}</required>`);
-            else inner += `\n<required>${params.required}</required>`;
-        }
-        if (params.defaultValue !== undefined) {
-            if (inner.includes("<defaultValue>")) inner = inner.replace(/<defaultValue>[^<]*<\/defaultValue>/i, `<defaultValue>${x(params.defaultValue)}</defaultValue>`);
-            else inner += `\n<defaultValue>${x(params.defaultValue)}</defaultValue>`;
-        }
-        const xml = `<met:metadata xsi:type="met:CustomField" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    ${inner}
-</met:metadata>`;
-        return await upsertMetadata(auth, xml);
-    } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
-    }
-}
+// `updateCustomObject` and `updateCustomField` used to live here. They were never wired to a tool,
+// and on inspection (2026-08-11) that turned out to be fortunate: both did readMetadata -> regex
+// edits -> upsertMetadata. `upsertMetadata` is a full component REPLACE, and a readMetadata of a
+// CustomObject carries every field, validation rule, list view and record type — so a one-word label
+// change round-tripped every child component through Salesforce's serializer and wrote it back,
+// silently damaging anything that did not survive the trip. The regexes also could not match
+// self-closing tags (`<description/>` fell through to the append branch, emitting a duplicate), and
+// mixed `met:`-prefixed appends with unprefixed replacements.
+//
+// Replaced by updateCustomObjectSafe / updateCustomFieldSafe in services/impact.ts, which read
+// current state from the Tooling API as JSON and write through a SCOPED deploy() — deploy merges,
+// so child components absent from the payload are left alone. Do not resurrect these.
 export async function createRelationshipField(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const isMD = params.relationshipType === "MasterDetail";
@@ -3770,30 +3882,85 @@ export async function assignCompactLayout(auth: SalesforceAuth, params: Record<s
 // Automation — activateFlow moved to CATEGORY I section below
 // createQuickAction moved to CATEGORY B section below
 // Apex & LWC
+/**
+ * Reads an Apex class by exact name, or lists classes matching a glob when `namePattern` is given.
+ *
+ * Pattern results deliberately omit `Body`: "find all classes matching Account*" over a real org can
+ * match dozens of multi-thousand-line classes, and returning every body would blow the context
+ * window for what is really a discovery call. Callers narrow down, then re-call with `className`.
+ */
 export async function getApexClass(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const toolingBase = `${auth.instanceUrl}/services/data/v${API_VERSION}/tooling`;
         const headers = { Authorization: `Bearer ${auth.accessToken}`, "Content-Type": "application/json" };
-        const safeName = params.className.replace(/'/g, "\\'");
-        const resp = await fetchWithTimeout(`${toolingBase}/query?q=${encodeURIComponent(`SELECT Id, Name, Body, ApiVersion, Status, LengthWithoutComments FROM ApexClass WHERE Name = '${safeName}'`)}`, { method: "GET", headers }, 30_000);
+
+        if (params.namePattern) {
+            const like = wildcardToSoqlLike(params.namePattern);
+            const limit = Math.min(Number(params.limit ?? 50), 200);
+            const soql = `SELECT Id, Name, ApiVersion, Status, LengthWithoutComments, NamespacePrefix FROM ApexClass WHERE Name LIKE '${like}' ORDER BY Name LIMIT ${limit}`;
+            const resp = await fetchWithTimeout(`${toolingBase}/query?q=${encodeURIComponent(soql)}`, { method: "GET", headers }, 30_000);
+            if (!resp.ok) return { success: false, message: `Tooling API error: HTTP ${resp.status}` };
+            const data = await resp.json();
+            const classes = (data.records ?? []).map((c: any) => ({
+                id: c.Id, name: c.Name, apiVersion: c.ApiVersion, status: c.Status,
+                length: c.LengthWithoutComments, namespace: c.NamespacePrefix ?? null,
+            }));
+            return {
+                success: true, matchCount: classes.length, classes,
+                message: classes.length === 0
+                    ? `No Apex classes match '${params.namePattern}'. Wildcards: * = any characters, ? = one character.`
+                    : `${classes.length} Apex class(es) match '${params.namePattern}'. Bodies are omitted here — call again with className for full source.`,
+            };
+        }
+
+        if (!params.className) return { success: false, message: `Provide either className (exact name) or namePattern (glob, e.g. 'Account*Controller').` };
+        const resp = await fetchWithTimeout(`${toolingBase}/query?q=${encodeURIComponent(`SELECT Id, Name, Body, ApiVersion, Status, LengthWithoutComments FROM ApexClass WHERE Name = '${soqlEscape(params.className)}'`)}`, { method: "GET", headers }, 30_000);
         if (!resp.ok) return { success: false, message: `Tooling API error: HTTP ${resp.status}` };
         const data = await resp.json();
-        if (!data.records?.length) return { success: false, message: `Apex class '${params.className}' not found.` };
+        if (!data.records?.length) return { success: false, message: `Apex class '${params.className}' not found. To search by pattern instead, pass namePattern (e.g. '${params.className}*').` };
         const cls = data.records[0];
         return { success: true, message: `Found Apex class '${params.className}'.`, id: cls.Id, name: cls.Name, body: cls.Body, apiVersion: cls.ApiVersion, status: cls.Status, length: cls.LengthWithoutComments };
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
     }
 }
+/**
+ * Reads an Apex trigger by exact name, or lists triggers matching a glob / bound to a given object.
+ * `objectName` is the trigger-specific discovery axis ("list all triggers on Account") that has no
+ * class equivalent.
+ */
 export async function getApexTrigger(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const toolingBase = `${auth.instanceUrl}/services/data/v${API_VERSION}/tooling`;
         const headers = { Authorization: `Bearer ${auth.accessToken}`, "Content-Type": "application/json" };
-        const safeName = params.triggerName.replace(/'/g, "\\'");
-        const resp = await fetchWithTimeout(`${toolingBase}/query?q=${encodeURIComponent(`SELECT Id, Name, Body, ApiVersion, Status, TableEnumOrId, UsageBeforeInsert, UsageAfterInsert, UsageBeforeUpdate, UsageAfterUpdate, UsageBeforeDelete, UsageAfterDelete, UsageAfterUndelete FROM ApexTrigger WHERE Name = '${safeName}'`)}`, { method: "GET", headers }, 30_000);
+
+        if (params.namePattern || params.objectName) {
+            const conditions: string[] = [];
+            if (params.namePattern) conditions.push(`Name LIKE '${wildcardToSoqlLike(params.namePattern)}'`);
+            if (params.objectName) conditions.push(`TableEnumOrId = '${soqlEscape(params.objectName)}'`);
+            const limit = Math.min(Number(params.limit ?? 50), 200);
+            const soql = `SELECT Id, Name, ApiVersion, Status, TableEnumOrId, NamespacePrefix FROM ApexTrigger WHERE ${conditions.join(" AND ")} ORDER BY Name LIMIT ${limit}`;
+            const resp = await fetchWithTimeout(`${toolingBase}/query?q=${encodeURIComponent(soql)}`, { method: "GET", headers }, 30_000);
+            if (!resp.ok) return { success: false, message: `Tooling API error: HTTP ${resp.status}` };
+            const data = await resp.json();
+            const triggers = (data.records ?? []).map((t: any) => ({
+                id: t.Id, name: t.Name, apiVersion: t.ApiVersion, status: t.Status,
+                objectName: t.TableEnumOrId, namespace: t.NamespacePrefix ?? null,
+            }));
+            const scope = [params.namePattern && `pattern '${params.namePattern}'`, params.objectName && `object ${params.objectName}`].filter(Boolean).join(" and ");
+            return {
+                success: true, matchCount: triggers.length, triggers,
+                message: triggers.length === 0
+                    ? `No Apex triggers match ${scope}. Wildcards: * = any characters, ? = one character.`
+                    : `${triggers.length} Apex trigger(s) match ${scope}. Bodies are omitted here — call again with triggerName for full source.`,
+            };
+        }
+
+        if (!params.triggerName) return { success: false, message: `Provide triggerName (exact), namePattern (glob), or objectName (all triggers on that object).` };
+        const resp = await fetchWithTimeout(`${toolingBase}/query?q=${encodeURIComponent(`SELECT Id, Name, Body, ApiVersion, Status, TableEnumOrId, UsageBeforeInsert, UsageAfterInsert, UsageBeforeUpdate, UsageAfterUpdate, UsageBeforeDelete, UsageAfterDelete, UsageAfterUndelete FROM ApexTrigger WHERE Name = '${soqlEscape(params.triggerName)}'`)}`, { method: "GET", headers }, 30_000);
         if (!resp.ok) return { success: false, message: `Tooling API error: HTTP ${resp.status}` };
         const data = await resp.json();
-        if (!data.records?.length) return { success: false, message: `Apex trigger '${params.triggerName}' not found.` };
+        if (!data.records?.length) return { success: false, message: `Apex trigger '${params.triggerName}' not found. To search by pattern instead, pass namePattern, or objectName to list all triggers on an object.` };
         const trg = data.records[0];
         return { success: true, message: `Found Apex trigger '${params.triggerName}' on ${trg.TableEnumOrId}.`, id: trg.Id, name: trg.Name, body: trg.Body, apiVersion: trg.ApiVersion, status: trg.Status, objectName: trg.TableEnumOrId };
     } catch (err) {
@@ -5781,6 +5948,117 @@ export async function getApexLogBody(auth: SalesforceAuth, params: Record<string
         }
         const body = await response.text();
         return { success: true, logId: params.logId, logLength: body.length, body, message: `Log body retrieved (${body.length} chars).` };
+    } catch (err) {
+        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+    }
+}
+/**
+ * Deletes TraceFlag records so debug logging stops, completing the enable/disable/read triad.
+ *
+ * Defaults to still-active flags only: an expired TraceFlag is already inert, and sweeping those up
+ * makes the reported count look alarming for no reason. The associated DebugLevel is deliberately
+ * left in place — DebugLevels are shared and reusable, and deleting one that another trace flag
+ * still points at fails noisily for no benefit.
+ */
+export async function disableDebugLogs(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
+    try {
+        const client = createClient(auth);
+        const conditions: string[] = [];
+        let scope = "all users";
+        if (params.username) {
+            const userSoql = `SELECT Id FROM User WHERE Username = '${soqlEscape(params.username)}'`;
+            const userResp = await client.get<{ records: Array<{ Id: string }> }>(`/query?q=${encodeURIComponent(userSoql)}`);
+            const userId = userResp.data.records?.[0]?.Id;
+            if (!userId) return { success: false, message: `No user found with username '${params.username}'.` };
+            conditions.push(`TracedEntityId = '${soqlEscape(userId)}'`);
+            scope = `'${params.username}'`;
+        }
+        if (params.includeExpired !== true) conditions.push(`ExpirationDate > ${new Date().toISOString()}`);
+        const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
+        const soql = `SELECT Id, TracedEntityId, DebugLevelId, ExpirationDate FROM TraceFlag${where} ORDER BY ExpirationDate DESC LIMIT 200`;
+        const resp = await client.get(`/tooling/query?q=${encodeURIComponent(soql)}`);
+        const flags = ((resp.data as any).records ?? []) as Array<{ Id: string; ExpirationDate: string }>;
+        if (flags.length === 0) {
+            return { success: true, deleted: 0, message: `No active debug log trace flags found for ${scope}. Nothing to disable.` };
+        }
+        const deletedIds: string[] = [];
+        const errors: string[] = [];
+        for (const f of flags) {
+            try {
+                await client.del(`/tooling/sobjects/TraceFlag/${f.Id}`);
+                deletedIds.push(f.Id);
+            } catch (e) {
+                errors.push(`${f.Id}: ${sanitizeError(e instanceof Error ? e.message : String(e))}`);
+            }
+        }
+        return {
+            success: errors.length === 0,
+            deleted: deletedIds.length,
+            deletedIds,
+            ...(errors.length > 0 ? { errors } : {}),
+            message: errors.length === 0
+                ? `Disabled debug logging for ${scope} — deleted ${deletedIds.length} trace flag(s). Existing captured logs are retained (24h) and remain readable via sf_get_debug_logs.`
+                : `Deleted ${deletedIds.length} of ${flags.length} trace flag(s) for ${scope}; ${errors.length} failed.`,
+        };
+    } catch (err) {
+        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+    }
+}
+/**
+ * Lists org objects filtered by a partial name or label — the "what objects exist here?" entry point
+ * that every other schema tool depends on. `sf_describe_object` requires an exact API name, which is
+ * useless when the user does not yet know it.
+ *
+ * Ranking is deliberate: exact match, then prefix match, then substring. A search for "Account"
+ * should not bury `Account` beneath `AccountBrandShare`.
+ */
+export async function listObjects(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
+    try {
+        const client = createClient(auth);
+        const resp = await client.get<{ sobjects: Array<Record<string, any>> }>(`/sobjects`);
+        let objects = resp.data.sobjects ?? [];
+        const total = objects.length;
+
+        const objectType = params.objectType ?? "all";
+        if (objectType === "custom") objects = objects.filter(s => s.custom === true);
+        else if (objectType === "standard") objects = objects.filter(s => s.custom !== true);
+        if (params.queryableOnly === true) objects = objects.filter(s => s.queryable === true);
+
+        const term = String(params.searchTerm ?? "").trim().toLowerCase();
+        if (term) {
+            objects = objects.filter(s =>
+                String(s.name ?? "").toLowerCase().includes(term) || String(s.label ?? "").toLowerCase().includes(term)
+            );
+            const rank = (s: Record<string, any>): number => {
+                const name = String(s.name ?? "").toLowerCase();
+                const label = String(s.label ?? "").toLowerCase();
+                if (name === term || label === term) return 0;
+                if (name.startsWith(term) || label.startsWith(term)) return 1;
+                return 2;
+            };
+            objects.sort((a, b) => rank(a) - rank(b) || String(a.name).localeCompare(String(b.name)));
+        } else {
+            objects.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+        }
+
+        const limit = params.limit ?? 50;
+        const matched = objects.length;
+        const page = objects.slice(0, limit).map(s => ({
+            name: s.name, label: s.label, labelPlural: s.labelPlural, custom: s.custom === true,
+            keyPrefix: s.keyPrefix, queryable: s.queryable, createable: s.createable,
+            updateable: s.updateable, deletable: s.deletable, customSetting: s.customSetting === true,
+        }));
+
+        return {
+            success: true,
+            totalObjectsInOrg: total,
+            matched,
+            returned: page.length,
+            objects: page,
+            message: term
+                ? `${matched} object(s) match '${params.searchTerm}'${matched > page.length ? `; showing the first ${page.length}` : ""}. Use sf_describe_object with an exact name for full field detail.`
+                : `${matched} object(s) in this org${matched > page.length ? `; showing the first ${page.length}` : ""}. Pass searchTerm to narrow.`,
+        };
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
     }

@@ -1,11 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   GetOrgLimitsSchema, GetFlowErrorsSchema, GetApexTestResultsSchema, GetDeploymentHistorySchema,
-  EnableDebugLogsSchema, GetDebugLogsSchema, GetDebugLogBodySchema,
+  EnableDebugLogsSchema, GetDebugLogsSchema, GetDebugLogBodySchema, DisableDebugLogsSchema,
 } from "../schemas/index.js";
 import {
   getAuth, getOrgLimits, getFlowErrors, getApexTestResults, getDeploymentHistory,
-  enableDebugLogs, getApexLogs, getApexLogBody,
+  enableDebugLogs, getApexLogs, getApexLogBody, disableDebugLogs,
 } from "../services/salesforce.js";
 import { resultContent } from "./utils.js";
 
@@ -94,6 +94,22 @@ After enabling, have the user (or an automated process) perform the action you w
   }, async (params) => {
     const auth = await getAuth();
     const result = await enableDebugLogs(auth, params);
+    return resultContent(result);
+  });
+
+  server.registerTool("sf_disable_debug_logs", {
+    title: "Disable Debug Logs",
+    description: `Turns Apex debug logging back off by deleting active TraceFlag records via the Tooling API. The counterpart to sf_enable_debug_logs.
+
+username: stop tracing for this user. Omit to disable ALL active trace flags in the org.
+includeExpired: also clean up already-expired trace flags (off by default — expired flags are already inert and sweeping them makes the count look alarming for nothing).
+
+Trace flags set by sf_enable_debug_logs expire on their own, so this is for stopping early — typically once you have captured the log you needed, to avoid filling the org's log allocation. Logs already captured are retained by Salesforce for 24 hours and stay readable via sf_get_debug_logs afterwards.`,
+    inputSchema: DisableDebugLogsSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  }, async (params) => {
+    const auth = await getAuth();
+    const result = await disableDebugLogs(auth, params);
     return resultContent(result);
   });
 

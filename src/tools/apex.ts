@@ -181,7 +181,12 @@ ruleSelector: optional override, e.g. ['pmd:Security'] — defaults to 'Recommen
     "sf_get_apex_class",
     {
       title: "Get Apex Class Source",
-      description: `Retrieves the full source code of an existing Apex class by exact name, via the Tooling API. Use before modifying a class (to see current logic), when debugging, or when a user asks "show me the X class" / "what does this class do". Returns the class body, API version, and status. Not to be confused with sf_create_apex_class, which deploys new or updated code — this tool only reads.`,
+      description: `Reads Apex classes via the Tooling API. Two modes:
+
+className: exact name — returns the full source body, API version and status. Use before modifying a class, when debugging, or when a user asks "show me the X class".
+namePattern: a glob — returns every matching class as a list (* = any characters, ? = one character), e.g. 'Account*' or 'Account*Controller' or '*Test'. Use when the user does not know the exact name ("find all the controller classes", "what test classes exist for Account"). Bodies are deliberately omitted in this mode to avoid returning tens of thousands of lines; pick one from the list and re-call with className.
+
+Read-only. Not to be confused with sf_create_apex_class, which deploys new or updated code.`,
       inputSchema: GetApexClassSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
@@ -196,7 +201,13 @@ ruleSelector: optional override, e.g. ['pmd:Security'] — defaults to 'Recommen
     "sf_get_apex_trigger",
     {
       title: "Get Apex Trigger Source",
-      description: `Retrieves the full source code of an existing Apex trigger by exact name, via the Tooling API. Returns the trigger body, the object it fires on, its active status, and which trigger events (before/after insert/update/delete/undelete) it's registered for. Use before modifying a trigger, or when a user asks to see or explain an existing trigger.`,
+      description: `Reads Apex triggers via the Tooling API. Three modes:
+
+triggerName: exact name — returns the full trigger body, the object it fires on, its active status, and which events (before/after insert/update/delete/undelete) it is registered for.
+namePattern: a glob — lists matching triggers (* = any characters, ? = one character), e.g. 'Account*'.
+objectName: lists every trigger on that object, e.g. 'Account' — answers "what triggers run on Case?". Combinable with namePattern.
+
+In list modes, bodies are omitted; re-call with triggerName for full source. Read-only.`,
       inputSchema: GetApexTriggerSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },

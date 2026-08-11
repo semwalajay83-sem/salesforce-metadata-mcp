@@ -6,14 +6,16 @@ import {
   GetRecordSchema, SearchRecordsSchema,
   CreateDataCategorySchema, BulkInsertRecordsSchema, BulkUpdateRecordsSchema,
   BulkDeleteRecordsSchema, CreateExtIdFieldSchema, DescribeObjectSchema,
+  ListObjectsSchema, GetMetadataDependenciesSchema, UpdateCustomObjectSchema, UpdateCustomFieldSchema,
 } from "../schemas/index.js";
 import {
   getAuth, createUser, updateUser, assignQueueMember, createPublicGroup,
   queryRecords, createRecord, updateRecord, bulkImportRecords, deleteRecord,
   sendEmail, exportRecords, upsertRecord, getRecord, searchRecords,
   createDataCategory, bulkInsertRecords, bulkUpdateRecords, bulkDeleteRecords,
-  createExtIdField, describeObject,
+  createExtIdField, describeObject, listObjects,
 } from "../services/salesforce.js";
+import { getMetadataDependencies, updateCustomObjectSafe, updateCustomFieldSafe } from "../services/impact.js";
 import { resultContent } from "./utils.js";
 
 export function registerDataTools(server: McpServer): void {
@@ -90,6 +92,78 @@ timeoutSeconds: max time to poll when waitForFields is set (default 60, max 300)
     const auth = await getAuth();
     const result = await describeObject(auth, params);
     return resultContent(result);
+  });
+
+  server.registerTool("sf_list_objects", {
+    title: "List / Search Objects",
+    description: `Finds Salesforce objects by PARTIAL name or label — the discovery step before sf_describe_object, which needs an exact API name you may not know yet.
+
+Use this whenever the user refers to objects loosely ("what objects handle cases?", "is there a custom object for invoices?", "show me the custom objects") rather than by exact API name.
+
+searchTerm: partial API name or label, case-insensitive. Omit to list every object in the org.
+objectType: 'all' (default), 'custom' (only __c), or 'standard'
+queryableOnly: true to hide objects that cannot be queried with SOQL
+limit: max results (default 50)
+
+Results rank exact matches first, then prefix matches, then substring matches, so a search for "Account" returns Account before AccountBrandShare. Returns name, label, keyPrefix and CRUD-ability per object; call sf_describe_object with an exact name for full field detail.`,
+    inputSchema: ListObjectsSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async (params) => {
+    const auth = await getAuth();
+    const result = await listObjects(auth, params);
+    return resultContent(result);
+  });
+
+  server.registerTool("sf_get_metadata_dependencies", {
+    title: "Metadata Impact Analysis",
+    description: `Answers "what breaks if I change this?" for any metadata component. Read-only — it changes nothing.
+
+Returns every component that REFERENCES the target (Apex classes, triggers, flows, validation rules, layouts, report types, formulas), grouped by type. For custom fields it also reports how many records currently hold a value, which is usually the deciding factor in whether a change is safe.
+
+componentType + componentName: e.g. CustomField + 'Account.Revenue__c', or ApexClass + 'AccountService'
+componentId: alternatively pass the Salesforce Id directly (needed for types outside the supported list)
+includeUses: also return what the component itself depends on
+
+Run this BEFORE deleting or reshaping anything that holds data. Note the blindSpots list returned with every response: this API cannot see dynamic SOQL, string-built field names, managed-package internals, or external integrations, so an empty result means "nothing found", never "safe to change".`,
+    inputSchema: GetMetadataDependenciesSchema,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async (params) => {
+    const auth = await getAuth();
+    const result = await getMetadataDependencies(auth, params);
+    return resultContent({ ...result, message: result.message } as never);
+  });
+
+  server.registerTool("sf_update_custom_object", {
+    title: "Update Custom Object",
+    description: `Updates object-level properties of an existing CUSTOM object (label, plural label, description, feature toggles, sharing model, deployment status). Only the properties you pass are changed.
+
+Fields, validation rules, record types and list views are never included in the payload, so they cannot be affected by this call.
+
+Changes are classified by risk. SAFE changes (labels, description, feature toggles) apply immediately. GUARDED changes (sharingModel, deploymentStatus) do NOT apply on the first call: you get back an impact report — what references this object, plus Salesforce's own validate-only deploy verdict — and must call again with confirmImpact: true to apply. Standard objects are rejected.`,
+    inputSchema: UpdateCustomObjectSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  }, async (params) => {
+    const auth = await getAuth();
+    const result = await updateCustomObjectSafe(auth, params);
+    return resultContent(result as never);
+  });
+
+  server.registerTool("sf_update_custom_field", {
+    title: "Update Custom Field",
+    description: `Updates an existing CUSTOM field's definition. Only the properties you pass are changed; every other property is preserved, and no other field on the object is touched.
+
+Every change is classified by risk before anything is written:
+- SAFE (label, description, help text, trackHistory, visibleLines) — applied immediately.
+- GUARDED (required, unique, externalId, defaultValue, length/precision increase) and DESTRUCTIVE (length/precision/scale REDUCTION, removing picklist values, restricting a picklist) — NOT applied on the first call. You receive an impact report: which components reference the field, how many records hold a value in it, and Salesforce's validate-only deploy verdict. Review it with the user, then call again with confirmImpact: true to apply.
+- REFUSED: changing a field's 'type', or renaming its API name. Both can destroy data or break string references invisible to any dependency API — do them in Setup, where Salesforce shows the conversion warnings.
+
+For pure impact analysis without any intent to change, use sf_get_metadata_dependencies instead.`,
+    inputSchema: UpdateCustomFieldSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+  }, async (params) => {
+    const auth = await getAuth();
+    const result = await updateCustomFieldSafe(auth, params);
+    return resultContent(result as never);
   });
 
   server.registerTool("sf_create_record", {

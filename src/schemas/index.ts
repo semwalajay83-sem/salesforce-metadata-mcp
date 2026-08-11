@@ -1210,7 +1210,7 @@ export const DeleteMetadataSchema = z.object({
 // ─── OBJECTS & FIELDS (v2.2.0) ───────────────────────────────────────────────
 
 export const UpdateCustomObjectSchema = z.object({
-  objectApiName: z.string().optional().describe("Custom object API name, e.g. 'MyObject__c'"),
+  objectApiName: z.string().optional().describe("Custom object API name, e.g. 'MyObject__c'. Standard objects are not supported."),
   fullName: z.string().optional().describe("Alias for objectApiName"),
   label: z.string().optional().describe("New singular label"),
   pluralLabel: z.string().optional().describe("New plural label"),
@@ -1219,19 +1219,65 @@ export const UpdateCustomObjectSchema = z.object({
   enableReports: z.boolean().optional().describe("Allow in reports"),
   enableSearch: z.boolean().optional().describe("Allow in search"),
   enableActivities: z.boolean().optional().describe("Enable activities (tasks and events)"),
+  enableFeeds: z.boolean().optional().describe("Enable Chatter feeds"),
+  enableBulkApi: z.boolean().optional().describe("Allow Bulk API access"),
+  enableStreamingApi: z.boolean().optional().describe("Allow Streaming API access"),
+  sharingModel: z.enum(["Private", "Read", "ReadWrite", "ControlledByParent", "FullAccess"]).optional()
+    .describe("Org-wide default sharing. GUARDED: changing this triggers a full sharing recalculation and can change record visibility for every user."),
+  deploymentStatus: z.enum(["InDevelopment", "Deployed"]).optional()
+    .describe("GUARDED: InDevelopment hides the object from everyone without 'Customize Application'."),
+  confirmImpact: z.boolean().default(false)
+    .describe("Set true to apply a GUARDED change. Leave false (default) to receive the impact report first without changing anything."),
 }).strict();
 
 export const UpdateCustomFieldSchema = z.object({
   objectApiName: z.string().optional().describe("Object API name, e.g. 'Account'"),
   objectName: z.string().optional().describe("Alias for objectApiName"),
-  fieldApiName: z.string().optional().describe("Field API name, e.g. 'MyField__c'"),
+  fieldApiName: z.string().optional().describe("Custom field API name, e.g. 'MyField__c'. Standard fields cannot be updated."),
   fieldName: z.string().optional().describe("Alias for fieldApiName"),
-  label: z.string().optional().describe("New field label"),
-  description: z.string().optional().describe("New description"),
-  helpText: z.string().optional().describe("New inline help text"),
-  required: z.boolean().optional().describe("Make field required"),
-  unique: z.boolean().optional().describe("Enforce uniqueness"),
-  defaultValue: z.string().optional().describe("New default value"),
+  label: z.string().optional().describe("New field label (SAFE)"),
+  description: z.string().optional().describe("New description (SAFE)"),
+  helpText: z.string().optional().describe("New inline help text (SAFE)"),
+  trackHistory: z.boolean().optional().describe("Enable/disable field history tracking (SAFE)"),
+  visibleLines: z.number().int().optional().describe("Visible lines for textarea/multi-select fields (SAFE)"),
+  required: z.boolean().optional().describe("GUARDED when set true: blocks saving any existing record that leaves this blank."),
+  unique: z.boolean().optional().describe("GUARDED when set true: fails outright if duplicate values already exist."),
+  externalId: z.boolean().optional().describe("GUARDED: changes how upserts match records."),
+  defaultValue: z.string().optional().describe("GUARDED: affects new records only."),
+  length: z.number().int().optional().describe("Text length. DESTRUCTIVE when reduced — truncates or rejects existing values."),
+  precision: z.number().int().optional().describe("Number precision. DESTRUCTIVE when reduced."),
+  scale: z.number().int().optional().describe("Number scale. DESTRUCTIVE when reduced."),
+  picklistValues: z.array(z.string()).optional()
+    .describe("Full replacement list of picklist values. Adding is SAFE; removing any existing value is DESTRUCTIVE."),
+  restricted: z.boolean().optional().describe("DESTRUCTIVE when set true: rejects existing values outside the defined set."),
+  confirmImpact: z.boolean().default(false)
+    .describe("Set true to apply a GUARDED or DESTRUCTIVE change. Leave false (default) to receive the impact report — dependencies, record counts, and Salesforce's validate-only verdict — without changing anything."),
+}).strict();
+
+export const GetMetadataDependenciesSchema = z.object({
+  componentType: z.string().optional()
+    .describe("Metadata type: CustomField, CustomObject, ApexClass, ApexTrigger, Flow, ValidationRule, Layout, PermissionSet, LightningComponentBundle, AuraDefinitionBundle, StaticResource, ApexPage, ApexComponent"),
+  componentName: z.string().optional()
+    .describe("Component API name. For CustomField use 'Object.Field__c', e.g. 'Account.Revenue__c'."),
+  componentId: z.string().optional()
+    .describe("Salesforce Id of the component, as an alternative to type+name (required for types not in the supported list)."),
+  includeUses: z.boolean().default(false)
+    .describe("Also return what this component itself depends on (the reverse direction)."),
+}).strict();
+
+export const ListObjectsSchema = z.object({
+  searchTerm: z.string().optional()
+    .describe("Partial API name or label to match, case-insensitive. Omit to list everything. Results rank exact matches first, then prefix, then substring."),
+  objectType: z.enum(["all", "custom", "standard"]).default("all").describe("Restrict to custom or standard objects"),
+  queryableOnly: z.boolean().default(false).describe("Only return objects that support SOQL queries"),
+  limit: z.number().int().min(1).max(500).default(50).describe("Maximum objects to return"),
+}).strict();
+
+export const DisableDebugLogsSchema = z.object({
+  username: z.string().optional()
+    .describe("Username whose debug logging should stop. Omit to disable ALL active trace flags in the org."),
+  includeExpired: z.boolean().default(false)
+    .describe("Also delete already-expired trace flags. Off by default since expired flags are already inert."),
 }).strict();
 
 export const CreateRelationshipFieldSchema = z.object({
@@ -1439,7 +1485,9 @@ export const UpdateApexClassSchema = z.object({
 }).strict();
 
 export const GetApexClassSchema = z.object({
-  className: z.string().min(1).describe("Apex class name to retrieve"),
+  className: z.string().optional().describe("Apex class name (exact match). Returns full source code."),
+  namePattern: z.string().optional().describe("Glob to list matching classes: * = any characters, ? = one character, e.g. 'Account*Controller'. Returns metadata without bodies — re-call with className for source."),
+  limit: z.number().int().min(1).max(200).default(50).describe("Max classes to return in pattern mode"),
 }).strict();
 
 export const GetCodeCoverageSchema = z.object({
@@ -3173,7 +3221,10 @@ export const DescribeObjectSchema = z.object({
 }).strict();
 
 export const GetApexTriggerSchema = z.object({
-  triggerName: z.string().min(1).describe("Apex trigger name (exact match), e.g. 'AccountTrigger'"),
+  triggerName: z.string().optional().describe("Apex trigger name (exact match), e.g. 'AccountTrigger'. Returns full source."),
+  namePattern: z.string().optional().describe("Glob to list matching triggers: * = any characters, ? = one character, e.g. 'Account*'. Returns metadata without bodies."),
+  objectName: z.string().optional().describe("List all triggers on this object, e.g. 'Account'. Combinable with namePattern."),
+  limit: z.number().int().min(1).max(200).default(50).describe("Max triggers to return in pattern/object mode"),
 }).strict();
 
 export const EnableDebugLogsSchema = z.object({
