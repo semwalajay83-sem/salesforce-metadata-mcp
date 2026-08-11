@@ -17,7 +17,11 @@
  *      `met:`-prefixed wrapper.
  *
  * The replacement here:
- *   - reads current state from the **Tooling API as JSON** (no XML regexes anywhere),
+ *   - reads a FIELD's current state from the **Tooling API as JSON**, no XML parsing at all. An
+ *     OBJECT still has to come from `readMetadata` XML, because the Tooling API exposes no
+ *     `Metadata` for CustomObject in either the REST retrieve or SOQL (verified live 2026-08-11) —
+ *     but that parse strips every child collection first and feeds a whitelist, never a write-back,
+ *     so it cannot reproduce the old failure,
  *   - writes through a **scoped `deploy()`** instead of `upsertMetadata`, because deploy *merges*:
  *     child components absent from the payload are left alone rather than replaced. For a field the
  *     payload names exactly one `<fields>` entry; for an object it carries object-level properties
@@ -28,7 +32,7 @@
  */
 import JSZip from "jszip";
 import type { SalesforceAuth } from "../types.js";
-import { API_VERSION, createClient, sanitizeError, soqlEscape, x } from "./salesforce.js";
+import { API_VERSION, callMetadataSoap, createClient, sanitizeError, soqlEscape, x } from "./salesforce.js";
 import { buildPackageXml, deployZip, pollDeployStatus } from "./deployment.js";
 
 // ─── Blind spots ──────────────────────────────────────────────────────────────
@@ -578,6 +582,81 @@ async function readToolingMetadata(auth: SalesforceAuth, sobject: string, id: st
   return { ...md, fullName: resp.data.FullName ?? md.fullName };
 }
 
+/**
+ * Child elements of a CustomObject that are COLLECTIONS, not object-level properties.
+ *
+ * These are stripped before any scalar parsing so that, for example, a `<label>` belonging to a
+ * field or a record type can never be mistaken for the object's own label. They are also the exact
+ * set that must never reach a write payload.
+ */
+const OBJECT_CHILD_COLLECTIONS = [
+  "fields", "validationRules", "listViews", "recordTypes", "webLinks", "compactLayouts",
+  "searchLayouts", "actionOverrides", "businessProcesses", "fieldSets", "sharingReasons",
+  "indexes", "namedFilters", "historyRetentionPolicy", "profileSearchLayouts", "sharingRecalculations",
+];
+
+/** Matches an element by local name, tolerating any namespace prefix (`met:label`, `label`, ...). */
+function tagRe(tag: string, flags: string): RegExp {
+  return new RegExp(`<(?:\\w+:)?${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/(?:\\w+:)?${tag}>`, flags);
+}
+
+function unescapeXml(s: string): string {
+  return s
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'").replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+}
+
+/**
+ * Reads a CustomObject's OBJECT-LEVEL properties via the Metadata API.
+ *
+ * The Tooling API cannot serve this: `CustomObject` exposes no `Metadata` field on the REST retrieve
+ * and no `Metadata` column in SOQL (verified live 2026-08-11 — the retrieve returns only
+ * DeveloperName/Description/SharingModel and a SOQL `SELECT Metadata` errors with "No such column").
+ * So `readMetadata` is the only source, and this parses it defensively:
+ *
+ *   1. every child COLLECTION is deleted from the XML first, so no nested `<label>` from a field or
+ *      record type can be scraped as if it were the object's own,
+ *   2. only then are top-level scalars read,
+ *   3. `nameField` is parsed explicitly because it is a required nested element on write.
+ *
+ * The result feeds a whitelist-built payload, never a write-back of the parsed blob — which is the
+ * distinction that made the previous implementation dangerous.
+ */
+async function readObjectMetadataViaSoap(auth: SalesforceAuth, objectApiName: string): Promise<any> {
+  const xml = await callMetadataSoap(
+    auth,
+    "readMetadata",
+    `<met:readMetadata><met:type>CustomObject</met:type><met:fullNames>${x(objectApiName)}</met:fullNames></met:readMetadata>`
+  );
+  const record = tagRe("records", "i").exec(xml);
+  if (!record) throw new Error(`Object '${objectApiName}' not found, or readMetadata returned no record for it.`);
+
+  let inner = record[1];
+  for (const child of OBJECT_CHILD_COLLECTIONS) inner = inner.replace(tagRe(child, "gi"), "");
+
+  const result: Record<string, any> = { fullName: objectApiName };
+
+  const nameFieldMatch = tagRe("nameField", "i").exec(inner);
+  if (nameFieldMatch) {
+    const nf: Record<string, any> = {};
+    for (const key of ["type", "label", "displayFormat", "trackHistory", "trackFeedHistory", "startingNumber"]) {
+      const m = tagRe(key, "i").exec(nameFieldMatch[1]);
+      if (m) nf[key] = unescapeXml(m[1].trim());
+    }
+    if (Object.keys(nf).length > 0) result.nameField = nf;
+    inner = inner.replace(tagRe("nameField", "gi"), "");
+  }
+
+  for (const key of OBJECT_LEVEL_KEYS) {
+    if (key === "nameField") continue;
+    const m = tagRe(key, "i").exec(inner);
+    if (!m) continue;
+    const raw = unescapeXml(m[1].trim());
+    result[key] = raw === "true" ? true : raw === "false" ? false : raw;
+  }
+  return result;
+}
+
 // ─── Safe update: custom field ────────────────────────────────────────────────
 
 export interface UpdateResult {
@@ -725,7 +804,7 @@ export async function updateCustomObjectSafe(auth: SalesforceAuth, params: Recor
       };
     }
     const resolved = await resolveComponentId(auth, "CustomObject", objectApiName);
-    const current = await readToolingMetadata(auth, "CustomObject", resolved.id);
+    const current = await readObjectMetadataViaSoap(auth, objectApiName);
 
     const requested: Record<string, any> = {};
     for (const k of [
