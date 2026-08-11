@@ -45,6 +45,24 @@ Add to your MCP configuration (`claude_desktop_config.json` or `.claude/settings
 
 See [SETUP.md](SETUP.md) for all authentication methods and detailed setup instructions.
 
+### One-click install (Claude Desktop)
+
+Download `salesforce-metadata-mcp-<version>.mcpb` from the [latest release](https://github.com/semwalajay83-sem/salesforce-metadata-mcp/releases/latest), then drag it into **Claude Desktop → Settings → Extensions**. It prompts for your org URL and credentials — no JSON editing.
+
+The bundle resolves the server from npm at launch rather than embedding a copy, so it always runs the current published version and never needs re-downloading after an upgrade.
+
+### Docker
+
+```bash
+docker build -t salesforce-metadata-mcp .
+docker run -i --rm \
+  -e SF_INSTANCE_URL="https://your-org.my.salesforce.com" \
+  -e SF_ACCESS_TOKEN="your_access_token" \
+  salesforce-metadata-mcp
+```
+
+The image builds from source, runs as a non-root user, and ships production dependencies only. Because this server speaks MCP over stdio, `-i` is required — the container is driven by its client, not run as a background service. `SF_ALIAS` will not work in a container: the Salesforce CLI's login flow needs a browser, so use token, JWT, refresh-token, or client-credentials variables instead.
+
 ---
 
 ## Tools — 228 total

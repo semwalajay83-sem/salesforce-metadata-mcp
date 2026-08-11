@@ -1,0 +1,73 @@
+# Keeps release metadata honest, and builds the MCPB bundle so nobody has to remember to.
+#
+# The bundle is deliberately NOT committed to the repo. A checked-in binary is exactly how these
+# artifacts go stale — it is built fresh here from mcpb/manifest.json on every tag and attached to
+# the GitHub release, so what users download always matches the tag they downloaded it from.
+
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+# Least privilege by default; the bundle job widens this for itself only.
+permissions:
+  contents: read
+
+jobs:
+  # Runs on every push and PR, not just releases: drift is far cheaper to fix when it is introduced
+  # than when it is discovered three releases later in a published artifact.
+  sync:
+    name: release metadata in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Build (the tool count is read from source, so it must compile)
+        run: npm run build
+      - name: Check version and tool count across every derived location
+        run: node scripts/check-release-sync.mjs
+
+  bundle:
+    name: pack and attach MCPB bundle
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: sync
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # required to upload a release asset
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # A tag that disagrees with package.json would publish a bundle whose internal version does not
+      # match the release it hangs off. Cheap to check, confusing to debug later.
+      - name: Tag must match package.json
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "tag is v$TAG but package.json says $PKG"
+            exit 1
+          fi
+
+      - name: Pack bundle
+        run: npx --yes @anthropic-ai/mcpb@2.1.2 pack mcpb "salesforce-metadata-mcp-${GITHUB_REF_NAME}.mcpb"
+
+      # Uses the preinstalled gh CLI rather than a third-party upload action — one less external
+      # dependency in the release path, and no unpinned action running with contents:write.
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" "salesforce-metadata-mcp-${GITHUB_REF_NAME}.mcpb" --clobber

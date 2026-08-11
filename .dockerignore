@@ -1,0 +1,23 @@
+# Keep the build context small and, more importantly, keep secrets and local state out of the image.
+# .env.local holds live Salesforce credentials and CLAUDE.local.md holds org URLs and a JWT consumer
+# key — neither must ever reach a layer, since anyone who can pull the image can read them.
+.env
+.env.*
+CLAUDE.local.md
+*.key
+*.pem
+
+.git
+.github
+node_modules
+dist
+
+# Test suites and QA scripts are not needed at runtime and several reference local org aliases.
+test*.mjs
+qa-*.mjs
+run-tests*.mjs
+*.log
+
+.claude
+.vscode
+.idea

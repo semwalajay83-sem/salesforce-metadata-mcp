@@ -1,0 +1,85 @@
+{
+  "manifest_version": "0.3",
+  "name": "salesforce-metadata-mcp",
+  "display_name": "Salesforce Metadata MCP",
+  "version": "2.12.0",
+  "description": "Manage Salesforce orgs from Claude in natural language — 228 tools.",
+  "long_description": "The only Salesforce MCP server that builds Agentforce agents, OmniStudio components and DevOps Center pipelines, alongside a complete daily developer loop: find objects by partial name, describe schemas, read and deploy Apex, run anonymous Apex, manage debug logs, query and manipulate records, and build flows, LWCs, permissions, reports and Experience Cloud sites.\n\nObject and field updates are risk-classified: safe changes apply immediately, while anything that could lose data returns an impact report first — what references the component, how many records hold a value, and Salesforce's own validate-only verdict — and applies only after you confirm. Field type changes and API-name renames are refused outright.\n\nThis bundle resolves the server from npm at launch, so it always runs the current published version.",
+  "author": {
+    "name": "Ajay Semwal",
+    "url": "https://github.com/semwalajay83-sem"
+  },
+  "homepage": "https://github.com/semwalajay83-sem/salesforce-metadata-mcp",
+  "documentation": "https://github.com/semwalajay83-sem/salesforce-metadata-mcp/blob/main/README.md",
+  "support": "https://github.com/semwalajay83-sem/salesforce-metadata-mcp/issues",
+  "license": "MIT",
+  "keywords": [
+    "salesforce",
+    "apex",
+    "agentforce",
+    "omnistudio",
+    "metadata",
+    "crm",
+    "lwc",
+    "flow"
+  ],
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "salesforce-metadata-mcp"
+      ],
+      "env": {
+        "SF_INSTANCE_URL": "${user_config.sf_instance_url}",
+        "SF_ACCESS_TOKEN": "${user_config.sf_access_token}",
+        "SF_CLIENT_ID": "${user_config.sf_client_id}",
+        "SF_CLIENT_SECRET": "${user_config.sf_client_secret}",
+        "SF_REFRESH_TOKEN": "${user_config.sf_refresh_token}"
+      }
+    }
+  },
+  "user_config": {
+    "sf_instance_url": {
+      "type": "string",
+      "title": "Salesforce instance URL",
+      "description": "Your org's My Domain URL, e.g. https://your-org.my.salesforce.com. Must be HTTPS.",
+      "required": true
+    },
+    "sf_access_token": {
+      "type": "string",
+      "title": "Access token",
+      "description": "A Salesforce access token. Simplest way to get started, but expires after about an hour. For a connection that refreshes itself, leave this blank and fill in the three OAuth fields below instead.",
+      "required": false,
+      "sensitive": true
+    },
+    "sf_client_id": {
+      "type": "string",
+      "title": "Connected App consumer key (optional)",
+      "description": "For a self-refreshing connection. Use with the consumer secret, and either a refresh token or a Connected App configured for the client-credentials flow.",
+      "required": false,
+      "sensitive": true
+    },
+    "sf_client_secret": {
+      "type": "string",
+      "title": "Connected App consumer secret (optional)",
+      "description": "Pairs with the consumer key above.",
+      "required": false,
+      "sensitive": true
+    },
+    "sf_refresh_token": {
+      "type": "string",
+      "title": "OAuth refresh token (optional)",
+      "description": "With the consumer key and secret, lets the server mint fresh access tokens indefinitely.",
+      "required": false,
+      "sensitive": true
+    }
+  },
+  "compatibility": {
+    "runtimes": {
+      "node": ">=20.0.0"
+    }
+  }
+}

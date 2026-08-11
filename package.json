@@ -29,7 +29,11 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "check:sync": "node scripts/check-release-sync.mjs",
+    "check:sync:fix": "node scripts/check-release-sync.mjs --fix",
+    "prepublishOnly": "npm run build && npm run check:sync",
+    "bundle": "npx --yes @anthropic-ai/mcpb@2.1.2 pack mcpb salesforce-metadata-mcp.mcpb"
   },
   "files": [
     "dist",

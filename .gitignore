@@ -30,3 +30,7 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Built MCPB bundle — a build artifact, not source. The manifest in mcpb/ is the source of truth,
+# and CI packs the bundle fresh on each tag. Committing the binary is how it goes stale.
+*.mcpb
