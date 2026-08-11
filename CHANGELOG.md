@@ -1,5 +1,108 @@
 # Changelog
 
+## [2.12.0] - 2026-08-11
+
+### Five new tools (223 → 228), and a dangerous pair of functions removed
+
+#### `sf_list_objects` — find objects without knowing their API name
+
+`sf_describe_object` requires an exact API name, which is useless when the user does not yet know it
+("what objects handle cases here?"). This lists objects by partial name or label, filterable to
+custom/standard/queryable, ranked exact match → prefix → substring so a search for `Account` returns
+`Account` before `AccountBrandShare`.
+
+#### `sf_get_metadata_dependencies` — impact analysis before you change anything
+
+Read-only. Answers "what breaks if I change this?" for custom fields, objects, Apex classes and
+triggers, flows, validation rules, layouts, permission sets, LWC/Aura bundles and static resources,
+via the Tooling API's `MetadataComponentDependency`. For custom fields it additionally reports how
+many records currently hold a value, which is usually the deciding factor in whether a change is safe.
+
+Every response — **including empty ones** — carries a `blindSpots` list. `MetadataComponentDependency`
+cannot see dynamic SOQL, field names built by string concatenation in Apex, managed-package internals,
+label-based references, or anything outside the org (integrations, ETL, API clients). An unqualified
+"0 dependencies found" reads as "safe to change", and for those categories that inference is wrong. A
+tool that stays silent about its blind spots is more dangerous than one that says nothing at all,
+because it manufactures false confidence.
+
+#### `sf_update_custom_object` / `sf_update_custom_field` — risk-classified, with a confirmation gate
+
+Every change is classified before anything is written:
+
+| Tier | Examples | Behaviour |
+|---|---|---|
+| SAFE | label, description, help text, `trackHistory`, feature toggles, adding picklist values | applied immediately |
+| GUARDED | `required`→true, `unique`→true, `externalId`, `defaultValue`, length/precision **increase**, `sharingModel`, `deploymentStatus` | impact report first |
+| DESTRUCTIVE | length/precision/scale **reduction**, removing picklist values, restricting a picklist, repointing a lookup | impact report first |
+| REFUSED | field `type` change, API-name rename | rejected outright |
+
+GUARDED and DESTRUCTIVE changes do **not** apply on the first call. They return the dependency list,
+the count of records holding data, and Salesforce's own `checkOnly` validate-only verdict; applying
+requires a second call with `confirmImpact: true`. The REFUSED tier is policy, not limitation:
+Salesforce's own UI performs type conversion through a multi-step wizard with data-loss warnings, and
+renaming a field breaks every string-literal reference no dependency API can see. Neither belongs
+behind a single chat message.
+
+#### Removed: the previous `updateCustomObject` / `updateCustomField`
+
+Both existed in `services/salesforce.ts` but were never wired to a tool. On inspection that was
+fortunate. They did `readMetadata` → regex edits → `upsertMetadata`, and:
+
+1. **`upsertMetadata` is a full component replace, and a `readMetadata` of a CustomObject carries
+   every field, validation rule, list view and record type.** A one-word label change therefore
+   round-tripped every child component through Salesforce's serializer and wrote it back — anything
+   rendered imperfectly was silently damaged or dropped.
+2. Their regexes could not match self-closing tags, so `<description/>` fell through to the append
+   branch and emitted a **duplicate** element.
+3. Replacements were written unprefixed while appends were `met:`-prefixed, inside a `met:` wrapper.
+
+The replacements in `services/impact.ts` write through a **scoped `deploy()`** instead. Deploy
+*merges*: child components absent from the payload are left alone. A field write names exactly one
+`<fields>` entry; an object write carries object-level properties only and structurally cannot contain
+a field. The same deploy path is used for `checkOnly` validation as for the real write, so the thing
+that was validated is the thing that gets applied.
+
+**Live-org finding that shaped this:** the Tooling API exposes no `Metadata` for `CustomObject` —
+absent from `/tooling/sobjects/CustomObject/<id>` and `SELECT Metadata FROM CustomObject` fails with
+"No such column". Object reads therefore use `readMetadata`, but every child collection is stripped
+from the XML before any scalar is parsed and the write payload is built from a whitelist, so the
+failure mode above cannot recur. Tooling `CustomField` *does* expose `Metadata` and is used directly.
+
+#### `sf_disable_debug_logs`
+
+Deletes active `TraceFlag` records, completing enable/disable/read. Defaults to still-active flags
+only (expired ones are already inert). The `DebugLevel` is deliberately left in place — they are
+shared and reusable, and deleting one another flag still points at fails for no benefit.
+
+### Improved
+
+- **`sf_get_apex_class` / `sf_get_apex_trigger` accept glob patterns.** `namePattern` supports `*` and
+  `?` (`Account*Controller`, `*Test`); triggers also accept `objectName` to answer "what triggers run
+  on Case?". Pattern results omit bodies — a broad match over a real org would otherwise return tens
+  of thousands of lines — so callers narrow down, then re-call with the exact name. Literal `%` and
+  `_` in the input are escaped before glob translation, so `Account_Helper` cannot act as a wildcard.
+- **Two more auth strategies:** OAuth 2.0 client-credentials (`SF_CLIENT_ID` + `SF_CLIENT_SECRET`) and
+  username/password (`+ SF_USERNAME` + `SF_PASSWORD` + optional `SF_SECURITY_TOKEN`). Both are ordered
+  *after* every existing strategy, and client-credentials is gated on `SF_REFRESH_TOKEN` being absent,
+  so no existing configuration changes which user the server acts as.
+- **`SF_API_VERSION`** overrides the API version (default `66.0`), with format validation — a newer org
+  may expose objects the default cannot see, and an org on a slower release track can reject a version
+  it does not yet serve. An unparseable value silently 404s every endpoint, so it falls back loudly
+  rather than being trusted.
+
+### Verified
+
+`test-new-tools-v212.mjs` 32/32, `test-dataprobe-v212.mjs` 4/4, `qa-flow-comprehensive.mjs` 144/144,
+`test-suite.mjs` 209/212 (the 2 failures probe a nonexistent scratch org and a dummy package ID on
+purpose). Both transports driven: stdio lists 228 tools, HTTP serves `/health` and `initialize` over
+`/mcp`, 404s unknown paths, and still binds `127.0.0.1`.
+
+The gate is asserted against a live org rather than reasoned about: a DESTRUCTIVE change is withheld,
+`type` changes and renames are refused, GUARDED applies only after `confirmImpact`, and — the
+regression that motivated the rewrite — a bystander field survives both a field-level and an
+object-level update. **Field survival is checked via the Tooling API, not REST describe**: describe's
+schema cache lags minutes on a dev org and reports fields as missing when they demonstrably exist.
+
 ## [2.11.2] - 2026-08-06
 
 ### Security — resolved all 5 production-dependency advisories (2 high, 3 moderate)
