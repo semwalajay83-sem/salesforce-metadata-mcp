@@ -133,9 +133,14 @@ function orgLimitFallback(r) {
 // Marks the result as skipped-with-reason rather than inventing a success.
 function skipIf(r, label) {
   if (!r || r.success !== false) return r;
+  // Only a genuine org-capability signal earns a skip. The hardcoded labels at these call sites
+  // ("Translation Workbench not enabled", "Entitlement process not available") were guesses, and
+  // several were masking malformed metadata XML we generate — a SOAP
+  // "Element {...}X invalid at this location in type Y" has nothing to do with org capability.
+  // Anything the allowlist does not recognise stays a failure and carries the label as context.
   const viaCapability = orgLimitFallback(r);
   if (viaCapability && viaCapability.__skip) return viaCapability;
-  return { __skip: `${label}: ${String(r.message ?? '').slice(0, 120)}` };
+  return { success: false, message: `${label}: ${String(r.message ?? '')}` };
 }
 
 // Helper: raw REST GET
@@ -1392,11 +1397,11 @@ await test('sf_create_apex_email_service', async () => {
 await test('sf_create_scheduled_job', async () => {
   try {
     const { createScheduledJob } = await import('./dist/services/tooling.js');
-    return orgLimitFallback(await createScheduledJob(auth, {
-      jobName: `MCPJob${TS}`,
-      cronExpression: '0 0 2 * * ?',
-      apexClassName: 'NonExistentClass',
-    }));
+    // createScheduledJob(auth, className, jobName, cronExpression) takes positional arguments.
+    // Passing an object here made className the object and cronExpression undefined, so the
+    // function threw "Cannot read properties of undefined (reading 'replace')" — which the suite
+    // then reported as a product bug rather than a bug in this call.
+    return orgLimitFallback(await createScheduledJob(auth, 'NonExistentClass', `MCPJob${TS}`, '0 0 2 * * ?'));
   } catch (e) {
     return { success: true, message: `Scheduled job API reached (${e.message?.slice(0, 60)})` };
   }

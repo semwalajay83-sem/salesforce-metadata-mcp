@@ -1794,14 +1794,13 @@ function buildApprovalProcessXml(params: {
     <met:approvalStep>
       <met:name>${x(step.name)}</met:name>
       <met:label>${x(step.label)}</met:label>
-      <met:entryOrder>${i + 1}</met:entryOrder>
       <met:allowDelegate>${step.allowDelegate ? "true" : "false"}</met:allowDelegate>
       <met:assignedApprover>
         ${step.approvers.map(a => `<met:approver>
           <met:type>${x(a.type)}</met:type>
           ${a.name ? `<met:name>${x(a.name)}</met:name>` : ""}
         </met:approver>`).join("\n")}
-        <met:whenMultipleApprovers>${x(step.whenMultiple)}</met:whenMultipleApprovers>
+        <met:whenMultipleApprovers>${x(step.whenMultiple || "Unanimous")}</met:whenMultipleApprovers>
       </met:assignedApprover>
       ${step.entryFormula ? `<met:entryCriteria><met:formula>${x(step.entryFormula)}</met:formula></met:entryCriteria>
         <met:ifCriteriaNotMet>${x(step.ifCriteriaNotMet)}</met:ifCriteriaNotMet>` : ""}
@@ -2103,9 +2102,18 @@ function buildRoleXml(params: {
     <met:caseAccessLevel>${x(params.caseAccessLevel)}</met:caseAccessLevel>
     <met:contactAccessLevel>${x(params.contactAccessLevel)}</met:contactAccessLevel>
     <met:opportunityAccessLevel>${x(params.opportunityAccessLevel)}</met:opportunityAccessLevel>
-    <met:accountAccessLevel>${x(params.accountAccessLevel)}</met:accountAccessLevel>
-    <met:mayForecastManagerShare>${params.mayForecastManagerShare}</met:mayForecastManagerShare>
+    <met:mayForecastManagerShare>${xmlBool(params.mayForecastManagerShare)}</met:mayForecastManagerShare>
   </met:metadata>`;
+}
+
+/**
+ * Boolean -> xsd:boolean text. Interpolating a raw boolean param straight into the template emits
+ * the string "undefined" whenever the caller omitted it, and Salesforce rejects the whole deploy
+ * with "'undefined' is not valid for type xsd:boolean". Coerce here instead.
+ */
+function xmlBool(v: unknown, fallback = false): string {
+  if (v === undefined || v === null) return fallback ? "true" : "false";
+  return v ? "true" : "false";
 }
 
 function buildQueueXml(params: {
@@ -2125,7 +2133,7 @@ function buildQueueXml(params: {
     <met:fullName>${x(params.fullName)}</met:fullName>
     <met:name>${x(params.name)}</met:name>
     ${params.email ? `<met:email>${x(params.email)}</met:email>` : ""}
-    <met:doesSendEmailToMembers>${params.doesSendEmailToMembers}</met:doesSendEmailToMembers>
+    <met:doesSendEmailToMembers>${xmlBool(params.doesSendEmailToMembers)}</met:doesSendEmailToMembers>
     ${sobjectsXml}
     ${membersXml}
   </met:metadata>`;
@@ -2161,7 +2169,7 @@ function buildLightningAppXml(params: {
       <met:name>${x(ni.name)}</met:name>
       <met:type>${x(ni.type)}</met:type>
       ${ni.label ? `<met:label>${x(ni.label)}</met:label>` : ""}
-      <met:defaultItem>${ni.defaultItem}</met:defaultItem>
+      <met:defaultItem>${xmlBool(ni.defaultItem)}</met:defaultItem>
     </met:navItems>`).join("\n");
   const utilityXml = (params.utilityItems ?? []).map(u => `
     <met:utilityBar>
@@ -2174,11 +2182,11 @@ function buildLightningAppXml(params: {
     <met:fullName>${x(params.fullName)}</met:fullName>
     <met:label>${x(params.label)}</met:label>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
-    <met:navType>${x(params.navType)}</met:navType>
-    <met:uiType>${x(params.uiType)}</met:uiType>
+    <met:navType>${x(params.navType || "Standard")}</met:navType>
+    <met:uiType>${x(params.uiType || "Lightning")}</met:uiType>
     <met:setupExperience>${x(params.setupExperience)}</met:setupExperience>
-    <met:isNavAutoTempTabsDisabled>${params.isNavAutoTempTabsDisabled}</met:isNavAutoTempTabsDisabled>
-    <met:isNavPersonalizationDisabled>${params.isNavPersonalizationDisabled}</met:isNavPersonalizationDisabled>
+    <met:isNavAutoTempTabsDisabled>${xmlBool(params.isNavAutoTempTabsDisabled)}</met:isNavAutoTempTabsDisabled>
+    <met:isNavPersonalizationDisabled>${xmlBool(params.isNavPersonalizationDisabled)}</met:isNavPersonalizationDisabled>
     ${navItemsXml}
     ${utilityXml}
   </met:metadata>`;
@@ -2191,8 +2199,7 @@ function buildTabXml(params: {
   return `<met:metadata xsi:type="met:CustomTab" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.fullName)}</met:fullName>
     <met:motif>${x(params.motif)}</met:motif>
-    <met:customObject>${params.customObject}</met:customObject>
-    ${params.sobjectName ? `<met:sobjectName>${x(params.sobjectName)}</met:sobjectName>` : ""}
+    <met:customObject>${xmlBool(params.customObject)}</met:customObject>
     ${params.label ? `<met:label>${x(params.label)}</met:label>` : ""}
     ${params.url ? `<met:url>${x(params.url)}</met:url>` : ""}
     ${params.page ? `<met:page>${x(params.page)}</met:page>` : ""}
@@ -2537,12 +2544,9 @@ function buildNetworkXml(params: {
 }): string {
   return `<met:metadata xsi:type="met:Network" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.siteName)}</met:fullName>
-    <met:label>${x(params.label)}</met:label>
     <met:urlPathPrefix>${x(params.urlPathPrefix)}</met:urlPathPrefix>
-    <met:template><met:name>${x(params.template)}</met:name></met:template>
-    <met:status>${x(params.status)}</met:status>
+    <met:status>${x(params.status || "UnderConstruction")}</met:status>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
-    ${params.guestUserProfile ? `<met:guestProfile>${x(params.guestUserProfile)}</met:guestProfile>` : ""}
     <met:allowedExtensions>jpg,jpeg,png,gif,pdf,doc,docx</met:allowedExtensions>
     <met:enableGuestChatter>false</met:enableGuestChatter>
     <met:enableInvitation>false</met:enableInvitation>
@@ -2553,13 +2557,11 @@ function buildNetworkXml(params: {
     <met:enableShowAllNetworkSettings>false</met:enableShowAllNetworkSettings>
     <met:enableTalkingAboutStats>false</met:enableTalkingAboutStats>
     <met:gatherCustomerSentimentData>false</met:gatherCustomerSentimentData>
-    <met:loginType>CommunitiesLogin</met:loginType>
     <met:networkMemberGroups></met:networkMemberGroups>
     <met:picassoSite>${x(params.siteName)}</met:picassoSite>
     <met:selfRegistration>false</met:selfRegistration>
     <met:sendWelcomeEmail>false</met:sendWelcomeEmail>
     <met:tabs></met:tabs>
-    <met:verificationRequired>Relaxed</met:verificationRequired>
   </met:metadata>`;
 }
 
@@ -4886,12 +4888,13 @@ export async function createQueueRoutingConfig(auth: SalesforceAuth, params: Rec
         if (!readResult.success) return { success: false, message: `Queue '${params.queueDeveloperName}' not found.` };
         const labelMatch = readResult.rawXml.match(/<label[^>]*>([\s\S]*?)<\/label>/i);
         const emailMatch = readResult.rawXml.match(/<email[^>]*>([\s\S]*?)<\/email>/i);
-        // WSDL order for Queue: email, fullName, label, routingConfiguration
+        // Queue WSDL elements: fullName, description, doesIncludeBosses, doesSendEmailToMembers,
+        // email, name, queueMembers, queueRoutingConfig, queueSobject. There is no "label".
         const xml = `<met:metadata xsi:type="met:Queue" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     ${emailMatch?.[1] ? `<met:email>${emailMatch[1]}</met:email>` : ""}
     <met:fullName>${x(params.queueDeveloperName)}</met:fullName>
-    <met:label>${labelMatch?.[1] ?? params.queueDeveloperName}</met:label>
-    <met:routingConfiguration>${x(params.routingConfigName)}</met:routingConfiguration>
+    <met:name>${labelMatch?.[1] ?? params.queueDeveloperName}</met:name>
+    <met:queueRoutingConfig>${x(params.routingConfigName)}</met:queueRoutingConfig>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
@@ -5053,15 +5056,14 @@ export async function createWorkType(auth: SalesforceAuth, params: Record<string
 }
 export async function createMessagingChannel(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
-        // WSDL order: channelType, description, fullName, isActive, masterLabel, messagingPlatformKey, pageId
+        // MessagingChannel WSDL: messagingChannelType (not channelType), platformKey (not
+        // messagingPlatformKey); isActive and pageId are not elements of this type.
         const xml = `<met:metadata xsi:type="met:MessagingChannel" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <met:channelType>${x(params.channelType)}</met:channelType>
+    <met:messagingChannelType>${x(params.channelType)}</met:messagingChannelType>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
     <met:fullName>${x(params.channelName)}</met:fullName>
-    <met:isActive>true</met:isActive>
     <met:masterLabel>${x(params.label)}</met:masterLabel>
-    ${params.phoneNumber ? `<met:messagingPlatformKey>${x(params.phoneNumber)}</met:messagingPlatformKey>` : ""}
-    ${params.pageId ? `<met:pageId>${x(params.pageId)}</met:pageId>` : ""}
+    ${params.phoneNumber ? `<met:platformKey>${x(params.phoneNumber)}</met:platformKey>` : ""}
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
@@ -5075,12 +5077,10 @@ export async function createChatButton(auth: SalesforceAuth, params: Record<stri
     <met:label>${x(params.label)}</met:label>
     <met:type>Standard</met:type>
     <met:routingType>${x(params.routingType ?? "Choice")}</met:routingType>
-    <met:optionsHasTimeoutAlert>${params.optionsHasTimeoutAlert ? "true" : "false"}</met:optionsHasTimeoutAlert>
-    <met:windowLanguage>${x(params.windowLanguage ?? "en")}</met:windowLanguage>
+    <met:isActive>${xmlBool(params.isActive, true)}</met:isActive>
+    <met:windowLanguage>${x(params.windowLanguage ?? "en_US")}</met:windowLanguage>
     ${params.queueName ? `<met:overallQueueLength>0</met:overallQueueLength>` : ""}
-    ${params.customAgentName ? `<met:customAgentCrxName>${x(params.customAgentName)}</met:customAgentCrxName>` : ""}
-    ${params.inviteRenderer ? `<met:inviteRenderer>${x(params.inviteRenderer)}</met:inviteRenderer>` : ""}
-    ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+    ${params.customAgentName ? `<met:customAgentName>${x(params.customAgentName)}</met:customAgentName>` : ""}
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
@@ -5090,16 +5090,12 @@ export async function createChatButton(auth: SalesforceAuth, params: Record<stri
 export async function createEmbeddedService(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const isLiveAgent = params.channelType === "LiveAgent";
-        // WSDL order: embeddedServiceLiveAgent/Messaging, embeddedServiceType, fullName, isEnabled, masterLabel, site
+        // EmbeddedServiceConfig WSDL elements include deploymentType, embeddedServiceMessagingChannel,
+        // fullName, isEnabled, masterLabel and site. There is no embeddedServiceType, and no
+        // embeddedServiceLiveAgent / embeddedServiceMessaging child elements on this type.
         const xml = `<met:metadata xsi:type="met:EmbeddedServiceConfig" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    ${isLiveAgent && params.chatButtonName ? `
-    <met:embeddedServiceLiveAgent>
-        <met:embeddedServiceConfigName>${x(params.deploymentName)}</met:embeddedServiceConfigName>
-        <met:liveChatButton>${x(params.chatButtonName)}</met:liveChatButton>
-        <met:offlineSupportEnabled>false</met:offlineSupportEnabled>
-    </met:embeddedServiceLiveAgent>` : ""}
-    ${!isLiveAgent && params.messagingChannelName ? `<met:embeddedServiceMessaging><met:messagingChannel>${x(params.messagingChannelName)}</met:messagingChannel></met:embeddedServiceMessaging>` : ""}
-    <met:embeddedServiceType>${isLiveAgent ? "Chat" : "Messaging"}</met:embeddedServiceType>
+    <met:deploymentType>${x(params.deploymentType || "Web")}</met:deploymentType>
+    ${!isLiveAgent && params.messagingChannelName ? `<met:embeddedServiceMessagingChannel>${x(params.messagingChannelName)}</met:embeddedServiceMessagingChannel>` : ""}
     <met:fullName>${x(params.deploymentName)}</met:fullName>
     <met:isEnabled>true</met:isEnabled>
     <met:masterLabel>${x(params.label)}</met:masterLabel>
@@ -5627,9 +5623,8 @@ export async function createForecastHierarchy(auth: SalesforceAuth, params: Reco
         const xml = `<met:metadata xsi:type="met:ForecastingSettings" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>ForecastingSettings</met:fullName>
     <met:forecastingTypeSettings>
-        <met:active>${params.isActive ? "true" : "false"}</met:active>
-        <met:displayCurrency>${x(params.displayCurrency ?? "USD")}</met:displayCurrency>
-        <met:forecastingType>${x(params.forecastingType)}</met:forecastingType>
+        <met:active>${xmlBool(params.isActive, true)}</met:active>
+        <met:name>${x(params.forecastingType)}</met:name>
     </met:forecastingTypeSettings>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
@@ -7950,10 +7945,10 @@ export async function createSamlSsoConfig(auth: SalesforceAuth, params: Record<s
     <met:fullName>${x(params.name)}</met:fullName>
     <met:name>${x(params.name)}</met:name>
     <met:issuer>${x(params.issuer)}</met:issuer>
-    <met:identityProviderCertificate>${x(params.identityProviderCertificate)}</met:identityProviderCertificate>
+    ${params.identityProviderCertificate ? `<met:validationCert>${x(params.identityProviderCertificate)}</met:validationCert>` : ""}
     <met:samlVersion>${x(params.samlVersion ?? "SAML2_0")}</met:samlVersion>
     <met:identityLocation>${x(params.identityLocation ?? "SubjectNameId")}</met:identityLocation>
-    <met:identityType>${x(params.identityType ?? "Username")}</met:identityType>
+    <met:identityMapping>${x(params.identityType ?? "Username")}</met:identityMapping>
     <met:requestSignatureMethod>${x(params.requestSignatureMethod ?? "RSA-SHA256")}</met:requestSignatureMethod>
     <met:loginUrl>${x(params.loginUrl)}</met:loginUrl>
     ${params.logoutUrl ? `<met:logoutUrl>${x(params.logoutUrl)}</met:logoutUrl>` : ""}
@@ -7969,12 +7964,11 @@ export async function createConnectedAppOAuthPolicy(auth: SalesforceAuth, params
     try {
         const xml = `<met:metadata xsi:type="met:ConnectedApp" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.connectedAppName)}</met:fullName>
-    <met:oauthConfig>
+    ${params.singleLogoutUrl ? `<met:oauthConfig><met:singleLogoutUrl>${x(params.singleLogoutUrl)}</met:singleLogoutUrl></met:oauthConfig>` : ""}
+    <met:oauthPolicy>
+        ${params.ipRelaxation ? `<met:ipRelaxation>${x(params.ipRelaxation)}</met:ipRelaxation>` : ""}
         <met:refreshTokenPolicy>${x(params.refreshTokenPolicy)}</met:refreshTokenPolicy>
-        ${params.singleLogoutUrl ? `<met:singleLogoutUrl>${x(params.singleLogoutUrl)}</met:singleLogoutUrl>` : ""}
-        ${params.sessionTimeout ? `<met:sessionTimeout>${x(params.sessionTimeout)}</met:sessionTimeout>` : ""}
-    </met:oauthConfig>
-    ${params.ipRelaxation ? `<met:oauthPolicy><met:ipRelaxation>${x(params.ipRelaxation)}</met:ipRelaxation></met:oauthPolicy>` : ""}
+    </met:oauthPolicy>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
