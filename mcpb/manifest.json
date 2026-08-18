@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "salesforce-metadata-mcp",
   "display_name": "Salesforce Metadata MCP",
-  "version": "2.12.0",
+  "version": "3.0.0",
   "description": "Manage Salesforce orgs from Claude in natural language — 228 tools.",
   "long_description": "The only Salesforce MCP server that builds Agentforce agents, OmniStudio components and DevOps Center pipelines, alongside a complete daily developer loop: find objects by partial name, describe schemas, read and deploy Apex, run anonymous Apex, manage debug logs, query and manipulate records, and build flows, LWCs, permissions, reports and Experience Cloud sites.\n\nObject and field updates are risk-classified: safe changes apply immediately, while anything that could lose data returns an impact report first — what references the component, how many records hold a value, and Salesforce's own validate-only verdict — and applies only after you confirm. Field type changes and API-name renames are refused outright.\n\nThis bundle resolves the server from npm at launch, so it always runs the current published version.",
   "author": {

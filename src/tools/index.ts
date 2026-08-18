@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ToolsetRegistry } from "../toolsets.js";
 import { registerMetadataTools } from "./metadata.js";
 import { registerObjectTools } from "./objects.js";
 import { registerAutomationTools } from "./automation.js";
@@ -33,38 +34,52 @@ import { registerAuraTools } from "./aura.js";
 import { registerFlowManagementTools } from "./flows.js";
 import { registerI18nTools } from "./i18n.js";
 
-export function registerTools(server: McpServer): void {
-  registerMetadataTools(server);
-  registerObjectTools(server);
-  registerAutomationTools(server);
-  registerSecurityTools(server);
-  registerUiTools(server);
-  registerApexTools(server);
-  registerLwcTools(server);
-  registerExperienceTools(server);
-  registerAgentforceTools(server);
-  registerDeploymentTools(server);
-  registerMcpTools(server);
-  registerIntegrationTools(server);
-  registerReportTools(server);
-  registerDataTools(server);
-  registerOmniStudioTools(server);
-  registerOmniChannelTools(server);
-  registerAuditTools(server);
-  registerEinsteinTools(server);
-  registerAdminTools(server);
-  registerMonitoringTools(server);
-  registerCommsTools(server);
-  registerDevOpsTools(server);
-  registerCpqTools(server);
-  registerVisualforceTools(server);
-  registerActionTools(server);
-  registerPageTools(server);
-  registerKnowledgeTools(server);
-  registerIdentityTools(server);
-  registerSandboxTools(server);
-  registerStreamingTools(server);
-  registerAuraTools(server);
-  registerFlowManagementTools(server);
-  registerI18nTools(server);
+export function registerTools(server: McpServer): ToolsetRegistry {
+  const registry = new ToolsetRegistry();
+
+  // Group name -> register function. The names here are the toolset names users and models see,
+  // and must match the keys in TOOLSET_INFO. Each function is handed a capturing proxy rather than
+  // the raw server, so every tool it registers is attributed to its group without the 33 modules
+  // needing to know anything about toolsets.
+  const groups: [string, (s: McpServer) => void][] = [
+    ["metadata", registerMetadataTools],
+    ["objects", registerObjectTools],
+    ["automation", registerAutomationTools],
+    ["security", registerSecurityTools],
+    ["ui", registerUiTools],
+    ["apex", registerApexTools],
+    ["lwc", registerLwcTools],
+    ["experience", registerExperienceTools],
+    ["agentforce", registerAgentforceTools],
+    ["deployment", registerDeploymentTools],
+    ["mcp", registerMcpTools],
+    ["integrations", registerIntegrationTools],
+    ["reports", registerReportTools],
+    ["data", registerDataTools],
+    ["omnistudio", registerOmniStudioTools],
+    ["omnichannel", registerOmniChannelTools],
+    ["audit", registerAuditTools],
+    ["einstein", registerEinsteinTools],
+    ["admin", registerAdminTools],
+    ["monitoring", registerMonitoringTools],
+    ["comms", registerCommsTools],
+    ["devops", registerDevOpsTools],
+    ["cpq", registerCpqTools],
+    ["visualforce", registerVisualforceTools],
+    ["actions", registerActionTools],
+    ["pages", registerPageTools],
+    ["knowledge", registerKnowledgeTools],
+    ["identity", registerIdentityTools],
+    ["sandbox", registerSandboxTools],
+    ["streaming", registerStreamingTools],
+    ["aura", registerAuraTools],
+    ["flows", registerFlowManagementTools],
+    ["i18n", registerI18nTools],
+  ];
+
+  for (const [name, register] of groups) {
+    register(registry.capture(server, name));
+  }
+
+  return registry;
 }

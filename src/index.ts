@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import { createRequire } from "module";
 import { registerTools } from "./tools/index.js";
+import { registerToolsetTools, toolsetSummary } from "./toolsets.js";
 
 // Single source of truth for the version. Hardcoding it here drifted from package.json across
 // v2.11.0/v2.11.1 (the server advertised 2.10.0 to clients while the package said 2.11.1), so read
@@ -18,14 +19,37 @@ const server = new McpServer({
   version: VERSION,
 });
 
-registerTools(server);
+const registry = registerTools(server);
+registerToolsetTools(server, registry);
+
+// Lazy toolsets: a full tools/list is ~362KB (~98k tokens) with everything loaded, which is about
+// half a 200k context window spent before the user types anything — and a 228-candidate list also
+// hurts tool-selection accuracy. Every tool stays registered and callable; tools outside the active
+// set are simply hidden from tools/list until sf_load_toolset or sf_find_tool switches them on.
+// Set SF_TOOLSETS=all to restore the pre-3.0 behaviour of loading everything up front.
+const initialToolsets = registry.resolveInitial(process.env["SF_TOOLSETS"]);
+registry.setActive(initialToolsets);
+
+// ─── Startup banner ───────────────────────────────────────────────────────────
+
+function logStartup(kind: string): void {
+  console.error(`Salesforce Metadata MCP server v${VERSION} running on ${kind}`);
+  console.error(
+    `Toolsets: ${registry.activeGroups().join(", ") || "none"} — ` +
+      `${registry.residentTools()} of ${registry.totalTools()} tools loaded. ` +
+      `Use sf_find_tool or sf_load_toolset to load more; SF_TOOLSETS=all loads everything.`,
+  );
+  if (process.env["SF_TOOLSETS_VERBOSE"] === "1") {
+    console.error(toolsetSummary(registry));
+  }
+}
 
 // ─── Transport: stdio ─────────────────────────────────────────────────────────
 
 async function runStdio(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error(`Salesforce Metadata MCP server v${VERSION} running on stdio`);
+  logStartup("stdio");
 }
 
 // ─── Transport: HTTP ──────────────────────────────────────────────────────────
@@ -89,7 +113,7 @@ async function runHTTP(): Promise<void> {
   });
 
   httpServer.listen(port, host, () => {
-    console.error(`Salesforce Metadata MCP server v${VERSION} running on http://${host}:${port}/mcp`);
+    logStartup(`http://${host}:${port}/mcp`);
   });
 }
 

@@ -6,12 +6,12 @@
     "url": "https://github.com/semwalajay83-sem/salesforce-metadata-mcp",
     "source": "github"
   },
-  "version": "2.12.0",
+  "version": "3.0.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "salesforce-metadata-mcp",
-      "version": "2.12.0",
+      "version": "3.0.0",
       "transport": {
         "type": "stdio"
       },
@@ -33,6 +33,11 @@
           "description": "Salesforce CLI org alias (alternative to SF_ACCESS_TOKEN)",
           "isRequired": false,
           "isSecret": false
+        },
+        {
+          "name": "SF_TOOLSETS",
+          "description": "Toolsets to load at startup: 'all', 'none', or a comma-separated list. Default: metadata,objects. All 228 tools stay available via sf_find_tool / sf_load_toolset.",
+          "isRequired": false
         }
       ]
     }

@@ -65,6 +65,45 @@ The image builds from source, runs as a non-root user, and ships production depe
 
 ---
 
+## Toolsets — loading 228 tools without burning your context
+
+All 228 tools are always available. Most are not loaded into the model's context until something asks for them.
+
+Listing every tool up front costs roughly **98,000 tokens** — about half a 200k context window, spent
+before you type anything, whether or not the session ever touches OmniStudio or DevOps Center. A
+228-candidate tool list also makes the model measurably worse at picking the right tool. So the server
+starts with a small core loaded and pulls in the rest on demand:
+
+| Startup | Tools listed | Approx. tokens |
+|---------|-------------:|---------------:|
+| Default (`metadata,objects`) | 21 | ~14,400 |
+| After loading two more toolsets | 45 | ~25,800 |
+| `SF_TOOLSETS=all` | 231 | ~98,600 |
+
+Three tools are always present and make everything else reachable:
+
+- **`sf_find_tool`** — search all 228 tools by name and load whatever contains the matches, in one
+  call. Ask for *"create an omniscript"* and it finds the tools, loads `omnistudio`, and they are
+  callable immediately. This is usually all you or the model needs.
+- **`sf_load_toolset`** — load named toolsets explicitly.
+- **`sf_list_toolsets`** — browse all toolsets, their tool counts, and what is loaded.
+
+In practice you don't manage this by hand: ask for what you want, and the model loads what it needs.
+
+To restore the previous behaviour of loading everything at startup, set `SF_TOOLSETS=all`. To start
+with only the three meta-tools, set `SF_TOOLSETS=none`. To pick your own core, pass a list:
+
+```json
+{ "env": { "SF_TOOLSETS": "metadata,objects,automation,security" } }
+```
+
+Available toolsets: `metadata`, `objects`, `data`, `automation`, `security`, `apex`, `lwc`, `ui`,
+`agentforce`, `omnistudio`, `omnichannel`, `devops`, `deployment`, `integrations`, `reports`,
+`experience`, `admin`, `monitoring`, `einstein`, `actions`, `pages`, `audit`, `cpq`, `knowledge`,
+`identity`, `sandbox`, `streaming`, `visualforce`, `aura`, `flows`, `comms`, `mcp`, `i18n`.
+
+---
+
 ## Tools — 228 total
 
 Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with parameters and example prompts.
@@ -228,6 +267,8 @@ Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with param
 | `SF_ACCESS_TOKEN` | Static access token (expires ~1hr) | For static |
 | `PORT` | HTTP server port (default: 3000) | For HTTP mode |
 | `TRANSPORT` | `stdio` or `http` (default: stdio) | Optional |
+| `SF_TOOLSETS` | Toolsets to load at startup: `all`, `none`, or a comma-separated list (default: `metadata,objects`) | Optional |
+| `SF_TOOLSETS_VERBOSE` | Set to `1` to print the full toolset list to stderr on startup | Optional |
 
 ---
 
