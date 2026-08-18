@@ -29,46 +29,75 @@ export interface ToolsetInfo {
 
 /** Descriptions for each toolset. Keys must match the group names used in `registerTools`. */
 export const TOOLSET_INFO: Record<string, ToolsetInfo> = {
-  metadata: { description: "Deploy/retrieve/delete metadata, describe objects, list objects, dependency analysis" },
-  objects: { description: "Custom objects, fields, formula fields, record types, field dependencies, picklists" },
-  data: { description: "Records: query (SOQL), search (SOSL), create, update, upsert, delete, bulk operations, export" },
-  automation: { description: "Flows, validation rules, approval processes, assignment/escalation/auto-response rules, duplicate & matching rules, workflow" },
-  security: { description: "Permission sets, permission set groups, profiles, roles, sharing rules, queues, public groups, field-level security" },
-  apex: { description: "Apex classes, triggers, test classes, test runs, code coverage, anonymous Apex, code scanning" },
-  lwc: { description: "Lightning Web Components — create, update, Jest tests, accessibility, Aura-to-LWC migration" },
-  ui: { description: "Page layouts, Lightning pages (FlexiPages), compact layouts, list views, tabs, apps, search layouts" },
+  core: { description: "Org discovery and deployment: describe object, list objects, SOQL query, deploy/retrieve/delete metadata, deploy status, dependency analysis. Loaded by default." },
+  metadata: { description: "Core schema creation: custom objects, custom fields, formula fields, picklist values, validation rules, approval processes, workflow field updates. Loaded by default." },
+  objects: { description: "Custom metadata types and records, custom labels, custom settings, global value sets, record types, business processes, page layouts, sharing rules, field dependencies" },
+  data: { description: "Records and users: create/update/upsert/delete records, bulk insert/update/delete/import, export, SOSL search, users, public groups, queue members, data categories, external ID fields, update existing objects/fields" },
+  flows: { description: "Flows — create (declarative or from XML), scheduled flows, activate, deactivate, list versions. Load this before building any Flow." },
+  automation: { description: "Non-flow automation: workflow rules, field updates, email alerts, assignment/escalation/auto-response rules, matching and duplicate rules, platform events, scheduled jobs, outbound messages, Apex email services" },
+  security: { description: "Permission sets, permission set groups, muting permission sets, custom permissions, roles, role hierarchy, queues, named credentials, field-level security" },
+  apex: { description: "Apex classes, triggers, test classes, test runs, anonymous Apex, read existing Apex, anti-pattern and code scanning" },
+  lwc: { description: "Lightning Web Components — create, update, generate from requirements, Jest tests, accessibility guidance, SLDS blueprints, Aura-to-LWC migration" },
+  ui: { description: "Lightning apps, tabs, compact layouts, list views, email templates, static resources, custom notification types, report types, dashboards" },
+  pages: { description: "Lightning pages (FlexiPages), path assistants, custom applications" },
+  actions: { description: "Quick actions, global actions, custom buttons, field sets" },
   agentforce: { description: "Agentforce agents — bot shell, actions (GenAiFunction), topics (GenAiPlugin), planner wiring" },
-  omnistudio: { description: "OmniStudio — OmniScripts, FlexCards, DataRaptors, Integration Procedures, calculation matrices/procedures" },
-  omnichannel: { description: "Omni-Channel — service channels, routing configs, presence statuses, queues, skills, chat buttons, messaging" },
-  devops: { description: "DevOps Center — projects, work items, commits, promotions, pull requests, merge conflicts" },
-  deployment: { description: "Change sets, packages, package versions, deploy status, deployment history, package install/uninstall" },
-  integrations: { description: "Named credentials, external data sources, external objects, remote site settings, auth providers, outbound messages" },
-  reports: { description: "Reports, report types, report folders, dashboards, folder sharing" },
+  omnistudio: { description: "OmniStudio — OmniScripts, FlexCards, DataRaptors, Integration Procedures, calculation matrices and procedures, document generation, component import/export" },
+  omnichannel: { description: "Omni-Channel and Service Cloud routing — service channels, routing configs, presence statuses, skills, service territories, work types, messaging channels, chat buttons, embedded service, bot routing" },
+  devops: { description: "Scratch orgs, packages and package versions, package install/uninstall, DevOps Center work items, commits, promotions, pull requests, merge conflicts, code coverage" },
+  deployment: { description: "Outbound change sets — create a change set and add components to it" },
+  integrations: { description: "Connected apps, external client apps, external data sources, external objects, remote site settings, CSP trusted sites" },
+  identity: { description: "Auth providers, SAML SSO configuration, connected app OAuth policies" },
+  reports: { description: "Reports, report folders, folder sharing, dashboard updates" },
   experience: { description: "Experience Cloud sites and pages" },
-  admin: { description: "Users, roles, business hours, holidays, custom labels/settings/metadata types, notifications" },
-  monitoring: { description: "Debug logs, event logs, login history, org limits, setup audit trail, flow errors, field history" },
-  einstein: { description: "Einstein bots, predictions, Next Best Action" },
-  actions: { description: "Quick actions, global actions, custom buttons, path assistants" },
-  pages: { description: "Static resources, CSP settings, letterheads, documents" },
-  audit: { description: "Field history tracking, change data capture, platform cache, scheduled jobs" },
-  cpq: { description: "Products, price books, forecasting, territories" },
-  knowledge: { description: "Knowledge article types, data categories, entitlement processes, milestones" },
-  identity: { description: "Connected apps, external client apps, SAML SSO, OAuth policies" },
-  sandbox: { description: "Sandboxes and scratch orgs — create, list, refresh, delete" },
-  streaming: { description: "Platform events, push topics, platform event triggers" },
-  visualforce: { description: "Visualforce pages, components, email templates" },
+  admin: { description: "User administration and org setup: role hierarchy, password reset, freeze user, territories, forecast hierarchy, search layouts, record-type layout assignment, custom tabs" },
+  monitoring: { description: "Org limits, flow errors, Apex test results, deployment history, debug log capture and retrieval" },
+  audit: { description: "Setup audit trail, login history, event log files, field history" },
+  einstein: { description: "Einstein predictions, Next Best Action, Einstein bots" },
+  knowledge: { description: "Knowledge article types, business hours, holidays" },
+  cpq: { description: "Products, price books, entitlement processes, milestones" },
+  sandbox: { description: "Sandboxes — create, refresh, list" },
+  streaming: { description: "Push topics, Change Data Capture configuration, platform cache partitions" },
+  visualforce: { description: "Visualforce pages, components and email templates" },
   aura: { description: "Aura components, apps and events" },
-  flows: { description: "Flow lifecycle — list versions, activate, deactivate, create from XML" },
-  comms: { description: "Email templates, email alerts, send email, Apex email services" },
-  mcp: { description: "Meta: scaffold MCP servers and tools, SLDS blueprints" },
+  comms: { description: "Letterheads and custom notification types" },
+  mcp: { description: "Meta: scaffold MCP servers and tools, list tools in an MCP project" },
   i18n: { description: "Translations for custom labels and field labels" },
 };
 
+/**
+ * Per-tool group overrides, applied after registration.
+ *
+ * The default grouping follows the src/tools/*.ts module a tool is registered in, which is mostly a
+ * good taxonomy but not always: `metadata.ts` mixes core schema creation with sf_create_flow, and
+ * the tools every session needs (describe, query, deploy, retrieve) are scattered across `data.ts`
+ * and `deployment.ts`. These overrides fix that without moving code between modules.
+ *
+ * sf_create_flow matters most here: at 15,266 bytes (~4,126 tokens) it is by far the largest single
+ * tool definition, and leaving it in a default-loaded group meant every session paid for the full
+ * Flow element schema whether or not it ever built a flow.
+ */
+export const TOOL_GROUP_OVERRIDES: Record<string, string> = {
+  // Universal — needed regardless of what the session is doing.
+  sf_describe_object: "core",
+  sf_list_objects: "core",
+  sf_query_records: "core",
+  sf_get_metadata_dependencies: "core",
+  sf_deploy_metadata: "core",
+  sf_retrieve_metadata: "core",
+  sf_check_deploy_status: "core",
+  sf_delete_metadata: "core",
+  // Flow tools belong together, and sf_create_flow is too large to sit in a default toolset.
+  sf_create_flow: "flows",
+  sf_create_scheduled_flow: "flows",
+};
+
 /** Loaded unless `SF_TOOLSETS` says otherwise. Covers the operations most sessions start with. */
-export const DEFAULT_TOOLSETS = ["metadata", "objects"] as const;
+export const DEFAULT_TOOLSETS = ["core", "metadata"] as const;
 
 interface ToolEntry {
   name: string;
+  /** Mutable: TOOL_GROUP_OVERRIDES can reassign a tool after registration. */
   group: string;
   handle: RegisteredTool;
 }
@@ -108,12 +137,27 @@ export class ToolsetRegistry {
     });
   }
 
+  /**
+   * Applies TOOL_GROUP_OVERRIDES. Called once after every module has registered, so that overrides
+   * can reference tools regardless of which module happened to create them.
+   */
+  applyOverrides(): void {
+    for (const entry of this.entries) {
+      const override = TOOL_GROUP_OVERRIDES[entry.name];
+      if (override) entry.group = override;
+    }
+  }
+
   markAlwaysOn(name: string): void {
     this.alwaysOn.add(name);
   }
 
+  /** Toolset names, ordered as declared in TOOLSET_INFO so listings read consistently. */
   groups(): string[] {
-    return [...new Set(this.entries.map((e) => e.group))];
+    const present = new Set(this.entries.map((e) => e.group));
+    const ordered = Object.keys(TOOLSET_INFO).filter((g) => present.has(g));
+    const extras = [...present].filter((g) => !(g in TOOLSET_INFO));
+    return [...ordered, ...extras];
   }
 
   countIn(group: string): number {

@@ -76,9 +76,13 @@ starts with a small core loaded and pulls in the rest on demand:
 
 | Startup | Tools listed | Approx. tokens |
 |---------|-------------:|---------------:|
-| Default (`metadata,objects`) | 21 | ~14,400 |
-| After loading two more toolsets | 45 | ~25,800 |
+| Default (`core,metadata`) | 18 | **~9,400** |
+| After loading two more toolsets | 41 | ~20,300 |
 | `SF_TOOLSETS=all` | 231 | ~98,600 |
+
+The default covers what nearly every session needs: describe/list objects, SOQL query,
+deploy/retrieve/delete metadata, deploy status, and core schema creation (objects, fields, formula
+fields, picklist values, validation rules, approval processes).
 
 Three tools are always present and make everything else reachable:
 
@@ -97,10 +101,15 @@ with only the three meta-tools, set `SF_TOOLSETS=none`. To pick your own core, p
 { "env": { "SF_TOOLSETS": "metadata,objects,automation,security" } }
 ```
 
-Available toolsets: `metadata`, `objects`, `data`, `automation`, `security`, `apex`, `lwc`, `ui`,
-`agentforce`, `omnistudio`, `omnichannel`, `devops`, `deployment`, `integrations`, `reports`,
-`experience`, `admin`, `monitoring`, `einstein`, `actions`, `pages`, `audit`, `cpq`, `knowledge`,
-`identity`, `sandbox`, `streaming`, `visualforce`, `aura`, `flows`, `comms`, `mcp`, `i18n`.
+Available toolsets: `core`, `metadata`, `objects`, `data`, `flows`, `automation`, `security`, `apex`,
+`lwc`, `ui`, `pages`, `actions`, `agentforce`, `omnistudio`, `omnichannel`, `devops`, `deployment`,
+`integrations`, `identity`, `reports`, `experience`, `admin`, `monitoring`, `audit`, `einstein`,
+`knowledge`, `cpq`, `sandbox`, `streaming`, `visualforce`, `aura`, `comms`, `mcp`, `i18n`.
+
+Flow tools live in their own `flows` toolset because `sf_create_flow` carries the full Flow element
+schema — 15,266 bytes (~4,126 tokens) on its own, the largest tool definition in the server. Keeping
+it out of the default means sessions that never build a Flow never pay for it, while sessions that do
+still get the complete validated schema.
 
 ---
 
@@ -267,7 +276,7 @@ Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with param
 | `SF_ACCESS_TOKEN` | Static access token (expires ~1hr) | For static |
 | `PORT` | HTTP server port (default: 3000) | For HTTP mode |
 | `TRANSPORT` | `stdio` or `http` (default: stdio) | Optional |
-| `SF_TOOLSETS` | Toolsets to load at startup: `all`, `none`, or a comma-separated list (default: `metadata,objects`) | Optional |
+| `SF_TOOLSETS` | Toolsets to load at startup: `all`, `none`, or a comma-separated list (default: `core,metadata`) | Optional |
 | `SF_TOOLSETS_VERBOSE` | Set to `1` to print the full toolset list to stderr on startup | Optional |
 
 ---

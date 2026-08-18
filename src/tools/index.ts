@@ -81,5 +81,8 @@ export function registerTools(server: McpServer): ToolsetRegistry {
     register(registry.capture(server, name));
   }
 
+  // Reassign the handful of tools whose module is not the toolset they belong in.
+  registry.applyOverrides();
+
   return registry;
 }
