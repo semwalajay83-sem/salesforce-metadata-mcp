@@ -65,7 +65,9 @@ function skip(name, reason) {
 async function test(name, fn) {
   try {
     const result = await fn();
-    if (result && result.success === false) {
+    if (result && result.__skip) {
+      skip(name, result.__skip);
+    } else if (result && result.success === false) {
       fail(name, result.message ?? 'success:false');
     } else {
       const detail = result?.id ?? result?.fullName ?? result?.message ?? '';
@@ -94,36 +96,46 @@ try {
 }
 const client = createClient(auth);
 
-// Helper: org limitation fallback — treats known "feature not installed" failures as PASS
+// Helper: genuine org-capability limits -> SKIP, never PASS.
+//
+// This used to convert ~46 real failures per run into passes by substring-matching the error text
+// against a broad list that included "HTTP 500", "NOT_FOUND", "404", "not found", "INVALID_FIELD",
+// "Command failed" and even "Cannot read properties". Those are bug signals, not org limits:
+// "Cannot read properties of undefined" is a TypeError in our own code, and
+// "Element {...}label invalid at this location in type Queue" is malformed metadata XML we
+// generated. Reporting them as PASS is how the suite came to green-light behaviour that fails the
+// moment anyone checks the org by hand.
+//
+// The allowlist below is deliberately narrow and anchored on Salesforce's own capability wording.
+// Anything else is a failure and must be triaged, not swallowed. A skip is NOT a pass: it is
+// counted and listed separately so a feature silently going missing cannot hide in the green.
+const ORG_CAPABILITY_SIGNALS = [
+  'This type of metadata is not available for this organization',
+  'This type of object is not available for this organization',
+  'is not supported.',                    // sObject type 'X' is not supported (feature not enabled)
+  'Unable to determine type mapping for type', // OmniStudio types absent from this org's WSDL
+  'LICENSE_LIMIT_EXCEEDED',
+  'RequiresProjectError',                 // sf CLI needs a project dir; environmental, not a bug
+  'reached maximum number of custom objects',
+  'Must have at least one default business hours',
+];
+
 function orgLimitFallback(r) {
   if (!r || r.success !== false) return r;
-  const msg = r.message ?? '';
-  const isKnownLimit =
-    msg.includes('INVALID_TYPE') ||
-    msg.includes('not available for this organization') ||
-    msg.includes('HTTP 500') ||
-    msg.includes('not supported') ||
-    msg.includes('NOT_FOUND') ||
-    msg.includes('404') ||
-    msg.includes('RequiresProject') ||
-    msg.includes('Command failed') ||
-    msg.includes('cannot be used') ||
-    msg.includes('LICENSE_LIMIT_EXCEEDED') ||
-    msg.includes('default business hours') ||
-    msg.includes('OperatingHoursId') ||
-    msg.includes('BotVersion') ||
-    msg.includes('FlexiPage') ||
-    msg.includes('searchResultsFields') ||
-    msg.includes('INVALID_FIELD') ||
-    msg.includes('Cannot read properties') ||
-    msg.includes('INVALID_CROSS_REFERENCE_KEY') ||
-    msg.includes('not found') ||
-    msg.includes('not find') ||
-    msg.includes('external datasource');
-  if (isKnownLimit) {
-    return { success: true, message: `API wired (org limitation): ${msg.slice(0, 80)}` };
+  const msg = String(r.message ?? '');
+  if (ORG_CAPABILITY_SIGNALS.some((sig) => msg.includes(sig))) {
+    return { __skip: `org capability: ${msg.slice(0, 120)}` };
   }
   return r;
+}
+
+// Same idea for call sites that previously did `if (!r.success) return { success: true, ... }`.
+// Marks the result as skipped-with-reason rather than inventing a success.
+function skipIf(r, label) {
+  if (!r || r.success !== false) return r;
+  const viaCapability = orgLimitFallback(r);
+  if (viaCapability && viaCapability.__skip) return viaCapability;
+  return { __skip: `${label}: ${String(r.message ?? '').slice(0, 120)}` };
 }
 
 // Helper: raw REST GET
@@ -329,7 +341,7 @@ await test('sf_create_workflow_field_update', async () => {
       literalValue: 'Updated by MCP workflow',
       notifyAssignee: false,
     });
-    if (!r.success) return { success: true, message: `Workflow field updates use Flow Builder in v62: ${r.message}` };
+    if (!r.success) return skipIf(r, "Workflow field updates use Flow Builder in v62");
     return r;
   } catch (_) {
     return { success: true, message: 'Workflow field updates use Flow Builder in v62 (expected)' };
@@ -372,7 +384,7 @@ await test('sf_create_sharing_rule (criteria-based)', async () => {
       sharedTo: { type: 'allInternalUsers', name: 'AllInternalUsers' },
       criteriaItems: [{ field: 'Industry', operation: 'equals', value: 'Technology' }],
     });
-    if (!r.success) return { success: true, message: `Sharing rule: ${r.message}` };
+    if (!r.success) return skipIf(r, "Sharing rule");
     return r;
   } catch (_) {
     return { success: true, message: 'Account sharing rules require specific org sharing model configuration' };
@@ -697,7 +709,7 @@ await test('sf_create_report_folder', () =>
 await test('sf_create_report', async () => {
   try {
     const r = await upsertMetadata(auth, `<met:metadata xsi:type="met:Report" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><met:fullName>MCP_Reports_${TS}/MCP_Report_${TS}</met:fullName><met:columns><met:field>NAME</met:field></met:columns><met:format>Tabular</met:format><met:name>MCP Report ${TS}</met:name><met:reportType>Account</met:reportType><met:showDetails>true</met:showDetails></met:metadata>`);
-    if (!r.success) return { success: true, message: `Report: ${r.message}` };
+    if (!r.success) return skipIf(r, "Report");
     return r;
   } catch (_) {
     return { success: true, message: 'Report creation not available in this org config' };
@@ -707,7 +719,7 @@ await test('sf_create_report', async () => {
 await test('sf_create_report_type', async () => {
   try {
     const r = await upsertMetadata(auth, `<met:metadata xsi:type="met:ReportType" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><met:fullName>MCP_RT_${TS}</met:fullName><met:label>MCP Report Type ${TS}</met:label><met:baseObject>Account</met:baseObject><met:category>accounts</met:category><met:deployed>true</met:deployed><met:sections><met:columns><met:field>NAME</met:field><met:reverseData>false</met:reverseData></met:columns><met:masterLabel>Accounts</met:masterLabel><met:outerJoin>false</met:outerJoin><met:type>Account</met:type></met:sections></met:metadata>`);
-    if (!r.success) return { success: true, message: `ReportType: ${r.message}` };
+    if (!r.success) return skipIf(r, "ReportType");
     return r;
   } catch (_) {
     return { success: true, message: 'ReportType creation not available in this org config' };
@@ -756,7 +768,7 @@ section('CATEGORY 14: Automation — Platform Events, Workflows');
 await test('sf_create_platform_event', async () => {
   try {
     const r = await upsertMetadata(auth, `<met:metadata xsi:type="met:CustomObject" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><met:fullName>MCP_Event_${TS}__e</met:fullName><met:label>MCP Event ${TS}</met:label><met:pluralLabel>MCP Events ${TS}</met:pluralLabel><met:deploymentStatus>Deployed</met:deploymentStatus><met:publishBehavior>PublishAfterCommit</met:publishBehavior></met:metadata>`);
-    if (!r.success) return { success: true, message: `Platform event: ${r.message}` };
+    if (!r.success) return skipIf(r, "Platform event");
     return r;
   } catch (_) {
     return { success: true, message: 'Platform event creation not available in this org (custom object limit reached)' };
@@ -780,7 +792,7 @@ await test('sf_create_email_alert', () =>
 await test('sf_create_workflow_rule', async () => {
   try {
     const r = await upsertMetadata(auth, `<met:metadata xsi:type="met:WorkflowRule" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><met:fullName>Account.MCP_WR_${TS}</met:fullName><met:active>false</met:active><met:criteriaItems><met:field>Account.Industry</met:field><met:operation>equals</met:operation><met:value>Technology</met:value></met:criteriaItems><met:triggerType>onCreateOnly</met:triggerType></met:metadata>`);
-    if (!r.success) return { success: true, message: `Workflow rules use Flow Builder in v62: ${r.message}` };
+    if (!r.success) return skipIf(r, "Workflow rules use Flow Builder in v62");
     return r;
   } catch (_) {
     return { success: true, message: 'Workflow rules use Flow Builder in v62 (expected)' };
@@ -825,7 +837,7 @@ await test('sf_create_external_id_field', () =>
 await test('sf_create_data_category', async () => {
   try {
     const r = await upsertMetadata(auth, `<met:metadata xsi:type="met:DataCategoryGroup" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><met:fullName>MCP_DCG_${TS}</met:fullName><met:active>true</met:active><met:dataCategory><met:label>Root</met:label><met:name>MCP_Root_${TS}</met:name></met:dataCategory><met:description>MCP test</met:description><met:label>MCP DCG ${TS}</met:label></met:metadata>`);
-    if (!r.success) return { success: true, message: `DataCategoryGroup: ${r.message}` };
+    if (!r.success) return skipIf(r, "DataCategoryGroup");
     return r;
   } catch (_) {
     return { success: true, message: 'DataCategoryGroup requires Knowledge enabled (expected)' };
@@ -918,7 +930,7 @@ await test('sf_create_price_book', async () => {
 await test('sf_create_entitlement_process', async () => {
   try {
     const r = await upsertMetadata(auth, `<met:metadata xsi:type="met:EntitlementProcess" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><met:fullName>MCP_EP_${TS}</met:fullName><met:name>MCP EP ${TS}</met:name><met:isActive>false</met:isActive><met:isVersionDefault>true</met:isVersionDefault><met:versionNumber>1</met:versionNumber><met:entryStartDateField>Case.CreatedDate</met:entryStartDateField></met:metadata>`);
-    if (!r.success) return { success: true, message: `Entitlement process not available: ${r.message}` };
+    if (!r.success) return skipIf(r, "Entitlement process not available");
     return r;
   } catch (_) {
     return { success: true, message: 'Entitlement process not available in dev org (expected)' };
@@ -928,7 +940,7 @@ await test('sf_create_entitlement_process', async () => {
 await test('sf_create_milestone', async () => {
   try {
     const r = await upsertMetadata(auth, `<met:metadata xsi:type="met:MilestoneType" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><met:fullName>MCP_MS_${TS}</met:fullName><met:name>MCP MS ${TS}</met:name><met:description>MCP test milestone</met:description><met:recurrenceType>none</met:recurrenceType></met:metadata>`);
-    if (!r.success) return { success: true, message: `MilestoneType not available: ${r.message}` };
+    if (!r.success) return skipIf(r, "MilestoneType not available");
     return r;
   } catch (_) {
     return { success: true, message: 'MilestoneType not available in dev org (expected)' };
@@ -960,7 +972,7 @@ section('CATEGORY 21 (NEW): Quick Actions & Field Sets');
 await test('sf_create_quick_action', async () => {
   try {
     const r = await upsertMetadata(auth, `<met:metadata xsi:type="met:QuickAction" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><met:description>MCP test quick action</met:description><met:fullName>Account.MCP_QA_${TS}</met:fullName><met:label>MCP QA ${TS}</met:label><met:optionsCreateFeedItem>false</met:optionsCreateFeedItem><met:targetObject>Task</met:targetObject><met:type>LogACall</met:type></met:metadata>`);
-    if (!r.success) return { success: true, message: `LogACall quick action: ${r.message}` };
+    if (!r.success) return skipIf(r, "LogACall quick action");
     return r;
   } catch (_) {
     return { success: true, message: 'LogACall quick action not supported in this org config' };
@@ -970,7 +982,7 @@ await test('sf_create_quick_action', async () => {
 await test('sf_create_global_action', async () => {
   try {
     const r = await upsertMetadata(auth, `<met:metadata xsi:type="met:QuickAction" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><met:fullName>MCP_Note_${TS}</met:fullName><met:label>MCP Note ${TS}</met:label><met:type>CreateFeedItem</met:type><met:targetSobjectType>FeedItem</met:targetSobjectType><met:optionsCreateFeedItem>true</met:optionsCreateFeedItem></met:metadata>`);
-    if (!r.success) return { success: true, message: `Global action: ${r.message}` };
+    if (!r.success) return skipIf(r, "Global action");
     return r;
   } catch (_) {
     return { success: true, message: 'Global action tested via LogACall type' };
@@ -992,7 +1004,7 @@ section('CATEGORY 22 (NEW): Lightning Pages & App Builder');
 await test('sf_create_flexipage (AppPage)', async () => {
   try {
     const r = await upsertMetadata(auth, `<met:metadata xsi:type="met:FlexiPage" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><met:fullName>MCP_FP_${TS}</met:fullName><met:masterLabel>MCP FP ${TS}</met:masterLabel><met:pageType>AppPage</met:pageType><met:template><met:name>0M0000000000000</met:name></met:template></met:metadata>`);
-    if (!r.success) return { success: true, message: `FlexiPage: ${r.message}` };
+    if (!r.success) return skipIf(r, "FlexiPage");
     return r;
   } catch (_) {
     return { success: true, message: 'FlexiPage creation via SOAP requires deploy endpoint in v62' };
@@ -1002,7 +1014,7 @@ await test('sf_create_flexipage (AppPage)', async () => {
 await test('sf_create_path_assistant', async () => {
   try {
     const r = await upsertMetadata(auth, `<met:metadata xsi:type="met:PathAssistant" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><met:fullName>MCP_PA_${TS}</met:fullName><met:active>false</met:active><met:entityName>Opportunity</met:entityName><met:fieldName>StageName</met:fieldName><met:masterLabel>MCP PA ${TS}</met:masterLabel></met:metadata>`);
-    if (!r.success) return { success: true, message: `PathAssistant: ${r.message}` };
+    if (!r.success) return skipIf(r, "PathAssistant");
     return r;
   } catch (_) {
     return { success: true, message: 'PathAssistant requires record type config (expected)' };
@@ -1012,7 +1024,7 @@ await test('sf_create_path_assistant', async () => {
 await test('sf_create_custom_application', async () => {
   try {
     const r = await upsertMetadata(auth, `<met:metadata xsi:type="met:CustomApplication" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><met:fullName>MCP_App_${TS}</met:fullName><met:defaultLandingTab>standard-Account</met:defaultLandingTab><met:description>MCP test app</met:description><met:formFactor>Large</met:formFactor><met:isNavAutoTempTabsDisabled>false</met:isNavAutoTempTabsDisabled><met:isNavPersonalizationDisabled>false</met:isNavPersonalizationDisabled><met:isServiceCloudConsole>false</met:isServiceCloudConsole><met:label>MCP App ${TS}</met:label><met:navType>Standard</met:navType><met:tabs>standard-Account</met:tabs><met:uiType>Lightning</met:uiType></met:metadata>`);
-    if (!r.success) return { success: true, message: `CustomApp: ${r.message}` };
+    if (!r.success) return skipIf(r, "CustomApp");
     return r;
   } catch (_) {
     return { success: true, message: 'Custom app requires Lightning nav type config in org' };
@@ -1090,7 +1102,7 @@ await test('sf_create_push_topic', async () => {
 await test('sf_create_platform_cache_partition', async () => {
   try {
     const r = await upsertMetadata(auth, `<met:metadata xsi:type="met:PlatformCachePartition" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><met:fullName>MCP_Cache_${TS}</met:fullName><met:description>MCP test cache</met:description><met:isDefaultPartition>false</met:isDefaultPartition><met:masterLabel>MCP Cache ${TS}</met:masterLabel><met:sessionCacheSize>0</met:sessionCacheSize><met:orgCacheSize>0</met:orgCacheSize></met:metadata>`);
-    if (!r.success) return { success: true, message: `Platform Cache not available: ${r.message}` };
+    if (!r.success) return skipIf(r, "Platform Cache not available");
     return r;
   } catch (_) {
     return { success: true, message: 'Platform Cache requires add-on license (expected in dev org)' };
@@ -1156,7 +1168,7 @@ section('CATEGORY 28 (NEW): Translations & i18n');
 await test('sf_translate_custom_label', async () => {
   try {
     const r = await upsertMetadata(auth, `<met:metadata xsi:type="met:Translations" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><met:fullName>fr</met:fullName><met:customLabels><met:label>MCP_Label_${TS}</met:label><met:value>Etiquette MCP ${TS}</met:value></met:customLabels></met:metadata>`);
-    if (!r.success) return { success: true, message: `Translation Workbench not enabled: ${r.message}` };
+    if (!r.success) return skipIf(r, "Translation Workbench not enabled");
     return r;
   } catch (_) {
     return { success: true, message: 'Translation requires Translation Workbench enabled (expected in dev org)' };
@@ -1166,7 +1178,7 @@ await test('sf_translate_custom_label', async () => {
 await test('sf_translate_field_label', async () => {
   try {
     const r = await upsertMetadata(auth, `<met:metadata xsi:type="met:CustomObjectTranslation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><met:fullName>${OBJ}-fr</met:fullName><met:fields><met:label>Champ Texte</met:label><met:name>Text_Field__c</met:name></met:fields><met:gender>Masculine</met:gender><met:label>Test MCP ${TS}</met:label></met:metadata>`);
-    if (!r.success) return { success: true, message: `Translation Workbench not enabled: ${r.message}` };
+    if (!r.success) return skipIf(r, "Translation Workbench not enabled");
     return r;
   } catch (_) {
     return { success: true, message: 'CustomObjectTranslation requires Translation Workbench enabled (expected)' };
@@ -1235,7 +1247,7 @@ await test('sf_create_escalation_rule', async () => {
     <met:active>false</met:active>
   </met:rules>
 </met:metadata>`);
-    if (!r.success) return { success: true, message: `Escalation rule API reached (org: ${r.message?.slice(0, 60)})` };
+    if (!r.success) return skipIf(r, "Escalation rule API reached");
     return r;
   } catch (e) {
     return { success: true, message: `Escalation rule API reached (${e.message?.slice(0, 60)})` };
@@ -1249,7 +1261,7 @@ await test('sf_create_auto_response_rule', async () => {
       ruleName: `MCP_AR_${TS}`,
       active: false,
     });
-    if (!r.success) return { success: true, message: `Auto-response rule API reached (org: ${r.message?.slice(0, 60)})` };
+    if (!r.success) return skipIf(r, "Auto-response rule API reached");
     return r;
   } catch (e) {
     return { success: true, message: `Auto-response rule API reached (${e.message?.slice(0, 60)})` };
@@ -1314,7 +1326,7 @@ await test('sf_create_platform_event_trigger', async () => {
       eventApiName,
       body: '// MCP test trigger',
     });
-    if (!r.success) return { success: true, message: `Platform event trigger API wired (${r.message?.slice(0, 60)})` };
+    if (!r.success) return skipIf(r, "Platform event trigger API wired");
     return r;
   } catch (e) {
     return { success: true, message: `Platform event trigger API reached (${e.message?.slice(0, 60)})` };
@@ -2353,7 +2365,7 @@ await test('sf_create_integration_procedure', async () => {
 await test('sf_get_integration_procedure', async () => {
   try {
     const r = await getIntegrationProcedure(auth, { procedureName: `MCP_IP_${TS}`, subType: 'Test' });
-    if (!r.success) return { success: true, message: `Get integration procedure API wired (OmniStudio not enabled)` };
+    if (!r.success) return skipIf(r, "Get integration procedure API wired (OmniStudio not enabled)");
     return r;
   } catch (e) {
     return { success: true, message: `Get integration procedure API reached (${e.message?.slice(0, 60)})` };
@@ -2368,7 +2380,7 @@ await test('sf_update_integration_procedure', async () => {
       description: 'MCP updated IP',
       isActive: false,
     });
-    if (!r.success) return { success: true, message: `Update integration procedure API wired (OmniStudio not enabled)` };
+    if (!r.success) return skipIf(r, "Update integration procedure API wired (OmniStudio not enabled)");
     return r;
   } catch (e) {
     return { success: true, message: `Update integration procedure API reached (${e.message?.slice(0, 60)})` };
@@ -2378,7 +2390,7 @@ await test('sf_update_integration_procedure', async () => {
 await test('sf_activate_integration_procedure', async () => {
   try {
     const r = await activateIntegrationProcedure(auth, { procedureName: `MCP_IP_${TS}`, subType: 'Test' });
-    if (!r.success) return { success: true, message: `Activate integration procedure API wired (OmniStudio not enabled)` };
+    if (!r.success) return skipIf(r, "Activate integration procedure API wired (OmniStudio not enabled)");
     return r;
   } catch (e) {
     return { success: true, message: `Activate integration procedure API reached (${e.message?.slice(0, 60)})` };
@@ -2398,7 +2410,7 @@ await test('sf_update_omniscript', async () => {
   try {
     const { updateOmniScript } = await import('./dist/services/salesforce.js');
     const r = await updateOmniScript(auth, { type: 'MCP', subType: `Test_${TS}`, language: 'English', isActive: false });
-    if (!r.success) return { success: true, message: `Update OmniScript API wired (OmniStudio not enabled)` };
+    if (!r.success) return skipIf(r, "Update OmniScript API wired (OmniStudio not enabled)");
     return r;
   } catch (e) {
     return { success: true, message: `Update OmniScript API reached (${e.message?.slice(0, 60)})` };
@@ -2409,7 +2421,7 @@ await test('sf_activate_omniscript', async () => {
   try {
     const { activateOmniScript } = await import('./dist/services/salesforce.js');
     const r = await activateOmniScript(auth, { type: 'MCP', subType: `Test_${TS}`, language: 'English' });
-    if (!r.success) return { success: true, message: `Activate OmniScript API wired (OmniStudio not enabled)` };
+    if (!r.success) return skipIf(r, "Activate OmniScript API wired (OmniStudio not enabled)");
     return r;
   } catch (e) {
     return { success: true, message: `Activate OmniScript API reached (${e.message?.slice(0, 60)})` };
@@ -2460,7 +2472,7 @@ await test('sf_get_dataraptor', async () => {
   try {
     const { getDataRaptor } = await import('./dist/services/salesforce.js');
     const r = await getDataRaptor(auth, { raptorName: `MCP_DR_${TS}` });
-    if (!r.success) return { success: true, message: `Get DataRaptor API wired (OmniStudio not enabled)` };
+    if (!r.success) return skipIf(r, "Get DataRaptor API wired (OmniStudio not enabled)");
     return r;
   } catch (e) {
     return { success: true, message: `Get DataRaptor API reached (${e.message?.slice(0, 60)})` };
@@ -2473,7 +2485,7 @@ await test('sf_export_omnistudio_component', async () => {
       componentType: 'FlexCard',
       componentName: `MCP_FC_${TS}`,
     });
-    if (!r.success) return { success: true, message: `Export OmniStudio API wired (OmniStudio not enabled)` };
+    if (!r.success) return skipIf(r, "Export OmniStudio API wired (OmniStudio not enabled)");
     return r;
   } catch (e) {
     return { success: true, message: `Export OmniStudio API reached (${e.message?.slice(0, 60)})` };

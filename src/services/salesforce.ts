@@ -7089,7 +7089,7 @@ export async function devOpsCreateWorkItem(auth: SalesforceAuth, params: Record<
         if (params.description) body["sf_devops__Description__c"] = params.description;
         if (params.pipelineStageId) body["sf_devops__Pipeline_Stage__c"] = params.pipelineStageId;
         if (params.assignedToId) body["OwnerId"] = params.assignedToId;
-        const resp = await client.post<{ id: string }>(`/services/data/v${API_VERSION}/sobjects/sf_devops__Work_Item__c`, body);
+        const resp = await client.post<{ id: string }>(`/sobjects/sf_devops__Work_Item__c`, body);
         return { success: true, id: resp.data.id, message: `Work item '${params.name}' created.` };
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
@@ -7099,7 +7099,7 @@ export async function devOpsCreateWorkItem(auth: SalesforceAuth, params: Record<
 export async function devOpsPromoteWorkItem(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const client = createClient(auth);
-        const resp = await client.post<{ id: string }>(`/services/data/v${API_VERSION}/sobjects/sf_devops__Work_Item__c/${params.workItemId}/promote`, {});
+        const resp = await client.post<{ id: string }>(`/sobjects/sf_devops__Work_Item__c/${params.workItemId}/promote`, {});
         return { success: true, data: resp.data, message: `Work item ${params.workItemId} promoted.` };
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
@@ -7148,7 +7148,7 @@ export async function detectDevOpsMergeConflict(auth: SalesforceAuth, params: Re
 export async function resolveDevOpsMergeConflict(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const client = createClient(auth);
-        await client.patch<unknown>(`/services/data/v${API_VERSION}/sobjects/sf_devops__Merge_Conflict__c/${params.conflictId}`, {
+        await client.patch<unknown>(`/sobjects/sf_devops__Merge_Conflict__c/${params.conflictId}`, {
             sf_devops__Resolution__c: params.resolution,
             sf_devops__Status__c: "Resolved",
         });
@@ -7161,7 +7161,7 @@ export async function resolveDevOpsMergeConflict(auth: SalesforceAuth, params: R
 export async function checkoutDevOpsWorkItem(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const client = createClient(auth);
-        await client.patch<unknown>(`/services/data/v${API_VERSION}/sobjects/sf_devops__Work_Item__c/${params.workItemId}`, {
+        await client.patch<unknown>(`/sobjects/sf_devops__Work_Item__c/${params.workItemId}`, {
             sf_devops__Status__c: "In Progress",
         });
         return { success: true, workItemId: params.workItemId, message: `Work item ${params.workItemId} checked out (status set to In Progress).` };
@@ -7173,7 +7173,7 @@ export async function checkoutDevOpsWorkItem(auth: SalesforceAuth, params: Recor
 export async function commitDevOpsWorkItem(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const client = createClient(auth);
-        const resp = await client.post<{ id: string }>(`/services/data/v${API_VERSION}/sobjects/sf_devops__Commit__c`, {
+        const resp = await client.post<{ id: string }>(`/sobjects/sf_devops__Commit__c`, {
             sf_devops__Work_Item__c: params.workItemId,
             sf_devops__Message__c: params.message,
         });
@@ -7191,7 +7191,7 @@ export async function createDevOpsPullRequest(auth: SalesforceAuth, params: Reco
             Name: params.title,
         };
         if (params.description) body["sf_devops__Description__c"] = params.description;
-        const resp = await client.post<{ id: string }>(`/services/data/v${API_VERSION}/sobjects/sf_devops__Pull_Request__c`, body);
+        const resp = await client.post<{ id: string }>(`/sobjects/sf_devops__Pull_Request__c`, body);
         return { success: true, pullRequestId: resp.data.id, message: `Pull request '${params.title}' created for work item ${params.workItemId}.` };
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
@@ -7241,7 +7241,7 @@ export async function checkDevOpsCommitStatus(auth: SalesforceAuth, params: Reco
 export async function promoteDevOpsWorkItem(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const client = createClient(auth);
-        await client.patch<unknown>(`/services/data/v${API_VERSION}/sobjects/sf_devops__Work_Item__c/${params.workItemId}`, {
+        await client.patch<unknown>(`/sobjects/sf_devops__Work_Item__c/${params.workItemId}`, {
             sf_devops__Pipeline_Stage__c: params.targetStageId,
         });
         return { success: true, workItemId: params.workItemId, targetStageId: params.targetStageId, message: `Work item promoted to stage ${params.targetStageId}.` };
@@ -7391,7 +7391,7 @@ export async function createProduct(auth: SalesforceAuth, params: Record<string,
         if (params.description) body["Description"] = params.description;
         if (params.family) body["Family"] = params.family;
         if (params.quantityUnitOfMeasure) body["QuantityUnitOfMeasure"] = params.quantityUnitOfMeasure;
-        const resp = await client.post<{ id: string }>(`/services/data/v${API_VERSION}/sobjects/Product2`, body);
+        const resp = await client.post<{ id: string }>(`/sobjects/Product2`, body);
         return { success: true, id: resp.data.id, message: `Product '${params.name}' created.` };
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
@@ -7407,7 +7407,7 @@ export async function createPriceBook(auth: SalesforceAuth, params: Record<strin
         };
         if (params.description) pbBody["Description"] = params.description;
         if (params.isStandard) pbBody["IsStandard"] = params.isStandard;
-        const pbResp = await client.post<{ id: string }>(`/services/data/v${API_VERSION}/sobjects/Pricebook2`, pbBody);
+        const pbResp = await client.post<{ id: string }>(`/sobjects/Pricebook2`, pbBody);
         const pbId = pbResp.data.id;
         const entries: Array<{ success: boolean; productId: string; entryId?: string }> = [];
         for (const p of (params.products ?? []) as Array<Record<string, unknown>>) {
@@ -7419,7 +7419,7 @@ export async function createPriceBook(auth: SalesforceAuth, params: Record<strin
                 UseStandardPrice: p["useStandardPrice"] ?? false,
             };
             if (params.currencyIsoCode) entryBody["CurrencyIsoCode"] = params.currencyIsoCode;
-            const eResp = await client.post<{ id: string }>(`/services/data/v${API_VERSION}/sobjects/PricebookEntry`, entryBody);
+            const eResp = await client.post<{ id: string }>(`/sobjects/PricebookEntry`, entryBody);
             entries.push({ success: true, productId: String(p["productId"]), entryId: eResp.data.id });
         }
         return { success: true, priceBookId: pbId, entries, message: `Pricebook '${params.name}' created with ${entries.length} product(s).` };
