@@ -68,11 +68,31 @@ All tool inputs are validated by Zod schemas before being used:
 
 ## Supported Versions
 
-| Version | Supported |
-|---------|-----------|
-| 2.1.x   | ✅ Current |
-| 2.0.x   | ⚠️ Upgrade recommended |
-| 1.x     | ❌ No longer supported |
+| Version | Status |
+|---------|--------|
+| 2.12.x | ✅ Supported — current npm `latest` |
+| 2.11.2 | ✅ Contains all security fixes |
+| 2.11.1 | ⚠️ Has the code fixes, but ships 5 production-dependency advisories resolved in 2.11.2 — upgrade |
+| **≤ 2.8.7** | ❌ **Deprecated on npm (2026-08-26) — command injection (RCE), SOQL injection, credential leak** |
+| 1.x | ❌ No longer supported |
+
+### Deprecated versions — 2026-08-26
+
+Every version **2.0.0 through 2.8.7** was deprecated on npm and now emits a warning on install.
+
+The security audit in **v2.8.8** fixed a confirmed command injection (RCE), a SOQL injection, a
+credential leak and a generated-code injection. **v2.8.8, v2.8.9, v2.9.0, v2.10.0 and v2.11.0 were
+never published to npm**, so the first npm release carrying those fixes is **v2.11.1**. Anyone on
+`2.8.7` or below — including the version that was npm `latest` at the time — is running unfixed code.
+
+If you are pinned to any version at or below 2.8.7, upgrade:
+
+```
+npm install salesforce-metadata-mcp@latest
+```
+
+Note that pinning to an exact old version bypasses `latest` entirely; check your lockfile, Dockerfile
+or MCP client config for a hardcoded version string.
 
 ---
 
