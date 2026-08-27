@@ -141,7 +141,9 @@ export class ToolsetRegistry {
               type Handler = (...a: unknown[]) => Promise<unknown>;
               const inner = guarded[last] as Handler;
               guarded[last] = async (...handlerArgs: unknown[]): Promise<unknown> => {
-                const refusal = await checkProductionGuard(name, isReadOnly);
+                // handlerArgs[0] is the validated tool params; the guard needs them to spot a call
+                // that redirects itself at a different org than this process is authenticated to.
+                const refusal = await checkProductionGuard(name, isReadOnly, handlerArgs[0]);
                 if (refusal !== null) return resultContent({ success: false, message: refusal });
                 return inner(...handlerArgs);
               };

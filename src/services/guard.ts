@@ -143,9 +143,33 @@ async function resolveOrg(): Promise<OrgIdentity> {
  * Code with permissions bypassed. Only an environment variable — something the human set outside
  * the conversation — lifts it.
  */
+/**
+ * Parameter names that redirect a tool at a different org than the ambient credentials.
+ *
+ * Found by attacking the guard 2026-08-28. `sf_uninstall_package` is gated, but
+ * `uninstallPackage()` ignores its `auth` argument entirely and shells out to
+ * `sf package uninstall --target-org <params.targetOrg>`. The guard resolved production-ness from
+ * `getAuth()` — a completely different org — so pointing SF_INSTANCE_URL at a dev org and passing
+ * `targetOrg: "<prod-alias>"` sailed straight through a guard that believed it was protecting
+ * production. Any org named this way is unverifiable from here without a second CLI round-trip, so
+ * a gated tool carrying one is refused rather than guessed at.
+ */
+const ORG_OVERRIDE_PARAMS = ["targetOrg", "targetAlias", "targetOrgAlias", "orgAlias"] as const;
+
+function orgOverride(params: unknown): string | null {
+  if (typeof params !== "object" || params === null) return null;
+  const record = params as Record<string, unknown>;
+  for (const key of ORG_OVERRIDE_PARAMS) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim() !== "") return key;
+  }
+  return null;
+}
+
 export async function checkProductionGuard(
   toolName: string,
   isReadOnly: boolean,
+  params?: unknown,
 ): Promise<string | null> {
   const mode = guardMode();
   if (mode === "off") return null;
@@ -153,6 +177,18 @@ export async function checkProductionGuard(
 
   const gated = mode === "strict" ? true : DESTRUCTIVE_TOOLS.has(toolName);
   if (!gated) return null;
+
+  // Checked before the org lookup: when a call names its own org, the org this process is
+  // authenticated to is not the org that will be affected, so resolving it would answer the wrong
+  // question and answer it reassuringly.
+  const override = orgOverride(params);
+  if (override !== null) {
+    return (
+      `Blocked by the production write guard: '${toolName}' was called with an explicit '${override}', ` +
+      `which redirects it to an org this server cannot verify is non-production. ` +
+      `Remove '${override}' to run against the configured org, or set SF_PRODUCTION_GUARD=off if the target is known to be safe.`
+    );
+  }
 
   const org = await resolveOrg();
   if (!org.isProduction) return null;

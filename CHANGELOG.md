@@ -42,6 +42,50 @@ proxy, so every current and future tool passes through it without the 33 tool mo
 Covered by `qa-guard.mjs` (26 checks), including assertions that each metadata-creation tool stays
 allowed and that Developer Edition / scratch / sandbox orgs are never treated as production.
 
+### Security: sf_deploy_metadata could be turned into a metadata deletion primitive
+
+Found by attacking the guard above rather than in review, and it was live in every published version
+that shipped `sf_deploy_metadata` with the `componentsXml` parameter.
+
+`inferMetadataPath`'s `default` branch (unrecognised metadata types) returned `` `${lower}s/${name}` ``
+with no extension appended, so the caller-supplied `name` controlled the tail of the zip path
+outright. A component of `{ type: "X", name: "../destructiveChanges.xml" }` produced the zip path
+`xs/../destructiveChanges.xml`, which JSZip normalises to a **root-level `destructiveChanges.xml`** —
+the manifest the Metadata API uses to *delete* every component listed in it. Confirmed by reading the
+generated archive's entry list, not by inspection.
+
+Impact: `sf_deploy_metadata` was documented and treated as additive-only (it is not in the production
+guard's blocked set for exactly that reason), while in fact being able to delete arbitrary metadata
+from any org the server could reach — bypassing the block on `sf_delete_metadata` completely.
+
+Fixed by validating component names before they reach the zip: path separators and `..` are rejected,
+as are the reserved manifest names `package.xml`, `destructiveChanges.xml`,
+`destructiveChangesPre.xml` and `destructiveChangesPost.xml` (case-insensitively). The assembled path
+is re-checked afterwards so a future branch that builds a path some other way cannot reintroduce this.
+Salesforce component names cannot contain path separators in any metadata type, so nothing legitimate
+is rejected. `sf_deploy_metadata` therefore stays available against production, as intended.
+
+### Security: production guard evaluated the wrong org for tools taking an org override
+
+`uninstallPackage()` ignores its `auth` argument entirely and shells out to
+`sf package uninstall --target-org <params.targetOrg>`. The guard resolved production-ness from
+`getAuth()` — a different org — so pointing `SF_INSTANCE_URL` at a dev org and passing
+`targetOrg: "<prod-alias>"` walked a gated tool straight past a guard that believed it was protecting
+production.
+
+Gated tools called with an explicit `targetOrg`, `targetAlias`, `targetOrgAlias` or `orgAlias` are now
+refused outright, since the named org cannot be verified from here without a second CLI round-trip.
+Fail closed rather than guess.
+
+### Security: package.xml manifest injection
+
+`buildPackageXml` interpolated component names and types into XML unescaped, so a name containing `<`
+closed the element early and appended attacker-chosen manifest entries. Lower severity than the two
+above (a manifest cannot express deletion, and listed components must also be present in the zip), but
+fixed with proper escaping. The `*` wildcard is unaffected.
+
+Attack coverage for all three lives in `qa-guard.mjs` (43 checks) so they cannot regress silently.
+
 
 ## [2.12.0] - 2026-08-11
 

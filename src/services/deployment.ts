@@ -17,11 +17,21 @@ function buildSimpleMetaXml(elementName: string, apiVersion: string): string {
 
 // ─── Zip-based deploy helpers ─────────────────────────────────────────────────
 
+/**
+ * Escapes a value interpolated into package.xml. Component names and types reach here straight from
+ * tool parameters, so without this a name containing `<` closes the element early and appends
+ * attacker-chosen manifest entries. Salesforce API names never contain these characters, and the
+ * `*` wildcard is unaffected, so escaping costs nothing legitimate.
+ */
+function escapeXmlText(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 export function buildPackageXml(types: Array<{ name: string; members: string[] }>, apiVersion: string): string {
   const typesXml = types.map(t => `
     <types>
-      ${t.members.map(m => `<members>${m}</members>`).join("\n      ")}
-      <name>${t.name}</name>
+      ${t.members.map(m => `<members>${escapeXmlText(m)}</members>`).join("\n      ")}
+      <name>${escapeXmlText(t.name)}</name>
     </types>`).join("\n");
   return buildMetaNsElement("Package", `  ${typesXml}\n  <version>${apiVersion}</version>`);
 }
@@ -85,6 +95,60 @@ export async function buildStaticResourceZip(resourceName: string, content: stri
     buildMetaNsElement("StaticResource", `  <cacheControl>Public</cacheControl>\n  <contentType>${contentType}</contentType>`));
   const buffer = await zip.generateAsync({ type: "nodebuffer" });
   return buffer.toString("base64");
+}
+
+/**
+ * Deploy-zip entries whose presence changes what a deploy *means* rather than what it contains.
+ *
+ * `destructiveChanges.xml` (and its Pre/Post variants) turn an additive deploy into a deletion:
+ * the Metadata API deletes every component listed in them. `package.xml` is the manifest this
+ * function's caller builds, so a second one would silently replace it.
+ */
+const RESERVED_ZIP_ENTRIES = new Set([
+  "package.xml",
+  "destructivechanges.xml",
+  "destructivechangespre.xml",
+  "destructivechangespost.xml",
+]);
+
+/**
+ * Rejects a component name that could escape the directory `inferMetadataPath` places it in.
+ *
+ * Found by attacking this code 2026-08-28, not in review, and it was live: `inferMetadataPath`'s
+ * `default` branch returns `${lower}s/${name}` with NO extension appended, so `name` controlled the
+ * tail of the zip path completely. Passing an unrecognised type with
+ * `name = "../destructiveChanges.xml"` produced `xs/../destructiveChanges.xml`, which JSZip
+ * normalises to a ROOT-LEVEL `destructiveChanges.xml` — verified by reading back the generated
+ * archive's entry list. That made sf_deploy_metadata a fully functional metadata *deletion*
+ * primitive while being documented and treated as additive-only, and it bypassed the production
+ * guard's block on sf_delete_metadata entirely.
+ *
+ * Salesforce component names cannot contain path separators in any metadata type, so rejecting them
+ * outright costs nothing legitimate.
+ */
+function assertSafeComponentName(type: string, name: string): void {
+  if (/[\\/]/.test(name) || name.split(/[\\/]/).includes("..") || name.includes("..")) {
+    throw new Error(
+      `Invalid component name for type '${type}': ${JSON.stringify(name)} — component names cannot contain path separators or '..'.`,
+    );
+  }
+  if (RESERVED_ZIP_ENTRIES.has(name.trim().toLowerCase())) {
+    throw new Error(
+      `Invalid component name for type '${type}': ${JSON.stringify(name)} is a reserved deployment manifest name.`,
+    );
+  }
+}
+
+/** Final check on the assembled path, in case a future branch builds one some other way. */
+function assertSafeZipPath(path: string): void {
+  const normalized = path.replace(/\\/g, "/").replace(/^\.\//, "");
+  const segments = normalized.split("/");
+  if (segments.includes("..") || normalized.startsWith("/")) {
+    throw new Error(`Refusing to write deploy-zip entry outside the package root: ${JSON.stringify(path)}`);
+  }
+  if (RESERVED_ZIP_ENTRIES.has((segments[segments.length - 1] ?? "").toLowerCase())) {
+    throw new Error(`Refusing to write reserved deployment manifest as a component: ${JSON.stringify(path)}`);
+  }
 }
 
 function inferMetadataPath(type: string, name: string): string {
@@ -167,7 +231,9 @@ export async function buildGenericDeployZip(
   zip.file("package.xml", packageXml);
   if (componentsXml) {
     for (const c of componentsXml) {
+      assertSafeComponentName(c.type, c.name);
       const filePath = inferMetadataPath(c.type, c.name);
+      assertSafeZipPath(filePath);
       zip.file(filePath, c.xml);
     }
   }
