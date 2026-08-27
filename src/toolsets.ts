@@ -1,5 +1,7 @@
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { checkProductionGuard } from "./services/guard.js";
+import { resultContent } from "./tools/utils.js";
 
 /**
  * Lazy toolsets — keeps all 228 tools available while keeping most of them out of the model's
@@ -126,8 +128,26 @@ export class ToolsetRegistry {
           type RegisterFn = (...args: unknown[]) => RegisteredTool;
           const original = (target.registerTool as unknown as RegisterFn).bind(target);
           return (...args: unknown[]): RegisteredTool => {
-            const handle = original(...args);
-            entries.push({ name: String(args[0]), group, handle });
+            const guarded = [...args];
+            const name = String(args[0]);
+            // The production write guard wraps every handler here rather than in the 33 tool
+            // modules, for the same reason group attribution lives here: this is the one place
+            // every tool in the server provably passes through, so no tool can be added later that
+            // silently misses the guard.
+            const last = guarded.length - 1;
+            if (typeof guarded[last] === "function") {
+              const config = guarded[1] as { annotations?: { readOnlyHint?: boolean } } | undefined;
+              const isReadOnly = config?.annotations?.readOnlyHint === true;
+              type Handler = (...a: unknown[]) => Promise<unknown>;
+              const inner = guarded[last] as Handler;
+              guarded[last] = async (...handlerArgs: unknown[]): Promise<unknown> => {
+                const refusal = await checkProductionGuard(name, isReadOnly);
+                if (refusal !== null) return resultContent({ success: false, message: refusal });
+                return inner(...handlerArgs);
+              };
+            }
+            const handle = original(...guarded);
+            entries.push({ name, group, handle });
             return handle;
           };
         }

@@ -278,6 +278,47 @@ Highlights below; see [TOOLS.md](TOOLS.md) for the complete reference with param
 | `TRANSPORT` | `stdio` or `http` (default: stdio) | Optional |
 | `SF_TOOLSETS` | Toolsets to load at startup: `all`, `none`, or a comma-separated list (default: `core,metadata`) | Optional |
 | `SF_TOOLSETS_VERBOSE` | Set to `1` to print the full toolset list to stderr on startup | Optional |
+| `SF_PRODUCTION_GUARD` | `destructive` (default), `strict`, or `off` — see below | Optional |
+
+---
+
+## Production write guard
+
+This server hands an LLM a Salesforce credential, and the LLM decides what to do with it. Any text
+the model reads on the way — a case comment, a field description, a retrieved `.flow` file, an
+email body — can carry an instruction, and nothing downstream can tell it apart from one you typed.
+
+So against a **production org**, nine tools are refused by default:
+
+| Blocked on production | Why |
+|---|---|
+| `sf_delete_metadata` | Destroys metadata and every record in it |
+| `sf_delete_record`, `sf_bulk_delete_records` | Destroy data |
+| `sf_execute_anonymous_apex` | Arbitrary code that leaves no artifact behind |
+| `sf_uninstall_package` | Removes a managed package and its data |
+| `sf_create_user`, `sf_update_user` | Privilege escalation |
+| `sf_reset_user_password`, `sf_freeze_user` | Account takeover / lockout |
+
+**Metadata creation is not affected.** All 137 `sf_create_*` tools, `sf_deploy_metadata` and
+`sf_retrieve_metadata` work against production exactly as before — authoring metadata by natural
+language is the point of this package, and a guard that taxed it would just get switched off.
+
+Apex authoring (`sf_create_apex_class`, `sf_create_apex_trigger`) is also **not** blocked, even
+though a trigger runs on every DML. The line drawn is auditability: created Apex is metadata — it
+has a name, an author and a deploy record, and can be found and removed. `sf_execute_anonymous_apex`
+leaves nothing to find, which is why that one is blocked.
+
+An org counts as production only when it is **not** a sandbox, **not** a Developer Edition org, and
+**not** on a trial/scratch expiry. Sandboxes, dev orgs and scratch orgs are never gated.
+
+```jsonc
+{ "env": { "SF_PRODUCTION_GUARD": "strict" } }   // refuse ALL writes on production
+{ "env": { "SF_PRODUCTION_GUARD": "off" } }      // no guard at all
+```
+
+The guard is a hard refusal, not a confirmation prompt: a prompt the calling agent can approve by
+itself is not a control, and this server is often run with client permissions bypassed. Only the
+environment variable lifts it.
 
 ---
 

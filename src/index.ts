@@ -6,6 +6,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import { createRequire } from "module";
 import { registerTools } from "./tools/index.js";
 import { registerToolsetTools, toolsetSummary } from "./toolsets.js";
+import { guardMode, DESTRUCTIVE_TOOLS } from "./services/guard.js";
 
 // Single source of truth for the version. Hardcoding it here drifted from package.json across
 // v2.11.0/v2.11.1 (the server advertised 2.10.0 to clients while the package said 2.11.1), so read
@@ -38,6 +39,17 @@ function logStartup(kind: string): void {
     `Toolsets: ${registry.activeGroups().join(", ") || "none"} — ` +
       `${registry.residentTools()} of ${registry.totalTools()} tools loaded. ` +
       `Use sf_find_tool or sf_load_toolset to load more; SF_TOOLSETS=all loads everything.`,
+  );
+  // Announced at startup rather than only on refusal: a guard nobody knows is on reads as a bug
+  // the first time it fires, and the org lookup that decides production-ness is lazy, so this is
+  // the only point where the configured intent can be stated without an extra API call.
+  const mode = guardMode();
+  console.error(
+    mode === "off"
+      ? "Production guard: OFF — all tools permitted against production orgs."
+      : mode === "strict"
+        ? "Production guard: strict — ALL write tools, including metadata creation, refused on production orgs. Set SF_PRODUCTION_GUARD=destructive or =off to change."
+        : `Production guard: destructive — ${DESTRUCTIVE_TOOLS.size} tools that delete data, run untraceable code or change org access are refused on production orgs. Metadata creation is unaffected. Set SF_PRODUCTION_GUARD to change.`,
   );
   if (process.env["SF_TOOLSETS_VERBOSE"] === "1") {
     console.error(toolsetSummary(registry));

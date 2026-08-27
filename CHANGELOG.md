@@ -1,5 +1,48 @@
 # Changelog
 
+## [Unreleased]
+
+### Production write guard
+
+This server hands an LLM a Salesforce credential and lets the LLM decide what to do with it. Any
+text the model reads along the way — a case comment, a field description, a retrieved `.flow` file,
+an email body — can carry an instruction, and nothing downstream can distinguish it from one the
+user typed. Salesforce's own hosted MCP servers ship a blunt version of the same defence: they
+create and update records but refuse to delete, with deletes behind a separate opt-in server.
+
+Nine tools are now refused against a **production** org: `sf_delete_metadata`, `sf_delete_record`,
+`sf_bulk_delete_records`, `sf_execute_anonymous_apex`, `sf_uninstall_package`, `sf_create_user`,
+`sf_update_user`, `sf_reset_user_password`, `sf_freeze_user`. Set `SF_PRODUCTION_GUARD=strict` to
+refuse every write instead, or `=off` to disable the guard.
+
+**Metadata creation is deliberately untouched.** All 137 `sf_create_*` tools, `sf_deploy_metadata`
+and `sf_retrieve_metadata` still work against production. `sf_deploy_metadata` was reviewed and
+left open because it has no `destructiveChanges` path — it builds a package.xml from the components
+passed to it and can only add or upsert. A guard that taxed metadata authoring would be turned off
+on day one, which is worse than no guard because it would then be off for everything too.
+
+Apex authoring (`sf_create_apex_class`, `sf_create_apex_trigger`) is also left open, even though a
+trigger is arbitrary code running on every DML. The line drawn is auditability: created Apex is
+metadata with a name, an author and a deploy record, and can be found and removed afterwards.
+`sf_execute_anonymous_apex` leaves no artifact at all, which is why it is the Apex path that is
+blocked. This is a real residual risk and is documented rather than papered over.
+
+An org counts as production only when it is not a sandbox, not a Developer Edition org, and has no
+trial expiry. **`IsSandbox = false` alone is not sufficient** — Developer Edition and scratch orgs
+both report `false`, and gating those would have made the feature unusable for everyone developing
+against a dev org. Org identity is resolved once per process and cached; if it cannot be determined,
+the org is treated as production (fail closed).
+
+The guard is a hard refusal rather than a confirmation prompt, because a prompt the calling agent
+can satisfy by itself is not a control — and this server is routinely run under clients with
+permissions bypassed. Only an environment variable set outside the conversation lifts it.
+
+Implemented in `src/services/guard.ts` and wired through the single `ToolsetRegistry.capture()`
+proxy, so every current and future tool passes through it without the 33 tool modules changing.
+Covered by `qa-guard.mjs` (26 checks), including assertions that each metadata-creation tool stays
+allowed and that Developer Edition / scratch / sandbox orgs are never treated as production.
+
+
 ## [2.12.0] - 2026-08-11
 
 ### Five new tools (223 → 228), and a dangerous pair of functions removed
