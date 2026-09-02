@@ -7,6 +7,7 @@ node_modules/
 # Secrets
 .env
 .env.local
+.env.local*
 .env.*.local
 CLAUDE.local.md
 *.key
