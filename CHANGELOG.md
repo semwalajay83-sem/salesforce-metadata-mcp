@@ -1,5 +1,55 @@
 # Changelog
 
+## [3.1.0] - 2026-09-09
+
+### Fixed: loaded toolsets could be unreachable on clients that ignore `list_changed`
+
+Reported against Claude Desktop: `sf_load_toolset(["apex","data"])` returned `success: true` with
+`residentTools` moving 18 → 47, `sf_find_tool` confirmed the tools existed in a loaded toolset, and
+not one of them was ever callable. The entire write surface of the server — anonymous Apex, record
+creation, bulk insert — was unreachable for a whole session while every status payload reported
+healthy. Reads kept working, because the initially-resident set was never affected.
+
+The server was not violating the protocol. It declares `tools.listChanged`, emits exactly one
+`notifications/tools/list_changed` per load, and `tools/list` genuinely changes — all now asserted
+end-to-end in `qa-client-refetch.mjs`. The client never re-fetched.
+
+Being protocol-correct was not enough. Lazy toolsets put 210 of 228 tools behind an *optional*
+client behaviour with no fallback when it is absent, so v3.1.0 adds one that needs no re-fetch:
+
+- **`sf_call_tool({ tool, arguments })`** — invokes any tool by name whether or not its toolset is
+  loaded and whether or not it appears in the client's tool list. Arguments are validated against
+  the same zod schema, and the handler it calls is the guard-wrapped one, so the production guard
+  applies exactly as on a direct call. It cannot invoke itself or the other meta-tools.
+- **`sf_tool_schema({ tool })`** — returns any tool's input schema, loaded or not, so a model can
+  construct that call for a tool it cannot see.
+- **`sf_find_tool`** now returns input schemas inline when a query matches three tools or fewer,
+  collapsing find → call into a single round trip. Wider searches still return names only, so this
+  does not reintroduce the context cost lazy toolsets exist to avoid.
+- **`sf_load_toolset`** now checks whether the client re-fetched `tools/list` after the notification
+  and reports `clientDidNotRefresh: true` with instructions to use `sf_call_tool`, rather than
+  claiming an unqualified success for tools that have silently become unreachable.
+
+With this, the full 228-tool surface is reachable from the handshake tool list alone, even under
+`SF_TOOLSETS=none`.
+
+The regression this adds is deliberately end-to-end. Every internal signal — `loadedToolsets`,
+`residentTools`, `sf_find_tool` matches — was correct throughout the reported session, so asserting
+on any of them would have passed cleanly while the server was unusable. `qa-client-refetch.mjs`
+instead drives two simulated clients, one that honours `list_changed` and one that never re-fetches,
+and asserts what the model can actually call.
+
+Also fixed along the way: `sf_call_tool`'s first implementation assumed `inputSchema` was always a
+`ZodRawShape`, but the shared schemas in `src/schemas` are built `ZodObject`s. Both forms are now
+normalised, matching what the SDK itself does.
+
+### Notes
+
+- Meta-tool count goes from 3 to 5, so the default startup listing is 20 tools rather than 18 and
+  `SF_TOOLSETS=all` lists 233 rather than 231. No Salesforce tool was added, removed or renamed.
+- `zod-to-json-schema` is now a direct dependency. It was already present transitively — the MCP SDK
+  uses it to serialise Zod v3 schemas — and this server now uses it for the same purpose.
+
 ## [3.0.0] - 2026-09-02
 
 ### Production write guard

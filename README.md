@@ -76,26 +76,46 @@ starts with a small core loaded and pulls in the rest on demand:
 
 | Startup | Tools listed | Approx. tokens |
 |---------|-------------:|---------------:|
-| Default (`core,metadata`) | 18 | **~9,400** |
-| After loading two more toolsets | 41 | ~20,300 |
-| `SF_TOOLSETS=all` | 231 | ~98,600 |
+| Default (`core,metadata`) | 20 | **~9,900** |
+| After loading two more toolsets | 43 | ~20,800 |
+| `SF_TOOLSETS=all` | 233 | ~99,100 |
 
 The default covers what nearly every session needs: describe/list objects, SOQL query,
 deploy/retrieve/delete metadata, deploy status, and core schema creation (objects, fields, formula
 fields, picklist values, validation rules, approval processes).
 
-Three tools are always present and make everything else reachable:
+Five tools are always present and make everything else reachable:
 
 - **`sf_find_tool`** — search all 228 tools by name and load whatever contains the matches, in one
   call. Ask for *"create an omniscript"* and it finds the tools, loads `omnistudio`, and they are
   callable immediately. This is usually all you or the model needs.
 - **`sf_load_toolset`** — load named toolsets explicitly.
 - **`sf_list_toolsets`** — browse all toolsets, their tool counts, and what is loaded.
+- **`sf_call_tool`** — invoke any tool by name, loaded or not, without it having to appear in the
+  tool list first. Arguments are validated and the production guard applies exactly as on a direct
+  call.
+- **`sf_tool_schema`** — return any tool's input schema, so `sf_call_tool` can be constructed for a
+  tool the client cannot see.
 
 In practice you don't manage this by hand: ask for what you want, and the model loads what it needs.
 
+### If loaded tools don't show up
+
+Loading a toolset enables it on the server and emits `notifications/tools/list_changed`. A client is
+supposed to re-fetch `tools/list` when it sees that. Some clients don't — and when that happens, the
+load reports success, the tools really are enabled, and the model still cannot call any of them
+because they never entered its tool list.
+
+Two things handle this, so no client can lose access to a tool:
+
+- `sf_load_toolset` checks whether the client re-fetched and says so in its response, instead of
+  reporting an unqualified success for tools that have become unreachable.
+- `sf_call_tool` reaches every tool without needing a re-fetch at all. Combined with `sf_tool_schema`,
+  the full 228-tool surface is usable from the handshake tool list alone — even under
+  `SF_TOOLSETS=none`.
+
 To restore the previous behaviour of loading everything at startup, set `SF_TOOLSETS=all`. To start
-with only the three meta-tools, set `SF_TOOLSETS=none`. To pick your own core, pass a list:
+with only the five meta-tools, set `SF_TOOLSETS=none`. To pick your own core, pass a list:
 
 ```json
 { "env": { "SF_TOOLSETS": "metadata,objects,automation,security" } }

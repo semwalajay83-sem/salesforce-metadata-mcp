@@ -227,14 +227,14 @@ async function main() {
   const all = client({ SF_TOOLSETS: "all" });
   await all.start();
   const allTools = await all.list();
-  check("all 228 tools + 3 meta-tools exposed", allTools.length === 231, `${allTools.length} tools`);
-  check("no tool lost vs pre-3.0", allTools.filter((t) => t.name.startsWith("sf_")).length === 231);
+  check("all 228 tools + 5 meta-tools exposed", allTools.length === 233, `${allTools.length} tools`);
+  check("no tool lost vs pre-3.0", allTools.filter((t) => t.name.startsWith("sf_")).length === 233);
   all.stop();
 
   const none = client({ SF_TOOLSETS: "none" });
   await none.start();
   const noneTools = await none.list();
-  check("SF_TOOLSETS=none leaves only the 3 meta-tools", noneTools.length === 3, `${noneTools.length} tools`);
+  check("SF_TOOLSETS=none leaves only the 5 meta-tools", noneTools.length === 5, `${noneTools.length} tools`);
   none.stop();
 
   // ── Summary ────────────────────────────────────────────────────────────────

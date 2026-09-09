@@ -144,6 +144,30 @@ through both and asserts runtime behavior; run it, not just `qa-flow-test.mjs`, 
 
 As of v2.8.3: 142 checks, 0 failures against `demo-org`.
 
+## Lazy toolsets — never trust an internal status signal (v3.1.0, 2026-09-09)
+A bug report said `sf_load_toolset` "never makes tools callable" and blamed a missing
+`notifications/tools/list_changed`. **The server was emitting it correctly** — verified on the wire:
+`capabilities.tools.listChanged: true`, exactly one notification per load, and `tools/list` really
+does grow from 18 to 47. The client (Claude Desktop) simply never re-fetched.
+
+Two lessons worth keeping:
+- **Protocol-correct is not the bar.** 210 of 228 tools sat behind an optional client behaviour with
+  no fallback. `sf_call_tool` + `sf_tool_schema` are now always-on so the whole surface is reachable
+  from the handshake list alone, even under `SF_TOOLSETS=none`.
+- **Every internal signal was green during the outage** — `loadedToolsets`, `residentTools`,
+  `sf_find_tool` matches. A test asserting on any of them would have passed while the server was
+  unusable. `qa-client-refetch.mjs` therefore simulates two clients (one that honours `list_changed`,
+  one that never re-fetches) and asserts what the *model* can call. Run it after any toolset change:
+
+      node qa-client-refetch.mjs
+
+  It also pins guard integrity through the proxy and direct-vs-proxy equivalence. 34 checks, 0
+  failures as of v3.1.0. `qa-toolsets.mjs` (26) and `qa-guard.mjs` (43) also pass.
+
+Gotcha for future edits: `registerTool`'s `inputSchema` is a **built ZodObject** in `src/schemas`,
+but a **raw shape** for the inline meta-tools. Anything reading schemas must normalise both — the
+first cut of `sf_call_tool` assumed raw shapes and silently rejected every argument object.
+
 ## Known Bugs Pending Fix
 None currently. The list below was retired 2026-07-30 after none of it reproduced against a live
 org (`demo-org`) via the full 33-scenario `qa-flow-test.mjs` suite — 30/30 real scenarios passed

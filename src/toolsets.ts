@@ -1,5 +1,6 @@
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
+import { z, type ZodRawShape } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
 import { checkProductionGuard } from "./services/guard.js";
 import { resultContent } from "./tools/utils.js";
 
@@ -22,6 +23,28 @@ import { resultContent } from "./tools/utils.js";
  * "Tool X disabled". So `sf_find_tool` exists and auto-loads by default — a model that doesn't
  * know where something lives can search for it and have it enabled in a single round trip,
  * rather than dead-ending on an error it can't act on.
+ *
+ * ── The 2026-09-09 bug, and why `sf_call_tool` exists ────────────────────────────────────────
+ *
+ * Everything above assumes the client re-fetches `tools/list` when it receives
+ * `notifications/tools/list_changed`. A first-party client (Claude Desktop) was observed not doing
+ * that. The consequence is severe and completely silent: `sf_load_toolset` returns success, the
+ * resident count moves, the tools really are enabled server-side — and the model still cannot call
+ * a single one of them, because they never entered its tool list. An entire session lost the whole
+ * write surface of this server while every status payload reported healthy.
+ *
+ * Being protocol-correct is not sufficient here. A design whose only path to 210 of its 228 tools
+ * runs through an optional client behaviour has no fallback when that behaviour is absent, so this
+ * module now provides one that needs no refetch at all:
+ *
+ *   sf_call_tool    invokes any registered tool by name, loaded or not, re-running the same zod
+ *                   validation and the same production guard the normal path applies.
+ *   sf_tool_schema  returns a tool's input schema so the model can construct that call.
+ *   sf_find_tool    returns schemas inline for narrow result sets, collapsing find→call to one hop.
+ *
+ * These three plus sf_list_toolsets are always resident, so the full surface is reachable from the
+ * handshake tool list alone. `sf_load_toolset` additionally probes whether the client refetched and
+ * says so in its response, which turns the silent failure into an actionable one.
  */
 
 export interface ToolsetInfo {
@@ -97,12 +120,53 @@ export const TOOL_GROUP_OVERRIDES: Record<string, string> = {
 /** Loaded unless `SF_TOOLSETS` says otherwise. Covers the operations most sessions start with. */
 export const DEFAULT_TOOLSETS = ["core", "metadata"] as const;
 
+/** A tool handler as the SDK calls it: (args, extra) when it has an input schema, (extra) when not. */
+type ToolHandler = (...args: unknown[]) => Promise<unknown>;
+
 interface ToolEntry {
   name: string;
   /** Mutable: TOOL_GROUP_OVERRIDES can reassign a tool after registration. */
   group: string;
   handle: RegisteredTool;
+  title: string | undefined;
+  description: string | undefined;
+  /**
+   * The raw zod shape from the tool's config, and the guard-wrapped handler.
+   *
+   * Kept so `sf_call_tool` can validate and invoke a tool the client cannot see. Capturing the
+   * handler here — after the production guard wraps it, a few lines below — is deliberate: the
+   * proxy gets the guarded function, never the bare one, so there is no path to a tool through
+   * sf_call_tool that skips a check the direct path applies.
+   */
+  inputSchema: unknown;
+  handler: ToolHandler | undefined;
 }
+
+/**
+ * Normalises a tool's declared `inputSchema` to something parseable.
+ *
+ * `registerTool` accepts either a ZodRawShape or an already-built ZodObject, and this codebase uses
+ * both — the shared schemas in src/schemas are ZodObjects, while the meta-tools here declare raw
+ * shapes inline. Assuming one form silently produced a schema with no known keys, which rejected
+ * every argument object as unrecognised.
+ */
+function toParsable(input: unknown): z.ZodTypeAny | undefined {
+  if (input === undefined || input === null) return undefined;
+  if (typeof (input as { safeParseAsync?: unknown }).safeParseAsync === "function") {
+    return input as z.ZodTypeAny;
+  }
+  return z.object(input as ZodRawShape);
+}
+
+/**
+ * How long `sf_load_toolset` waits for the client to re-fetch `tools/list` before concluding it
+ * never will. A conforming client refetches within a few milliseconds of the notification, so this
+ * is generous. Paid at most once per session — the verdict is cached after the first probe.
+ */
+const REFETCH_PROBE_MS = 300;
+
+/** Above this many matches, `sf_find_tool` returns names only — see the note at its call site. */
+const SCHEMA_INLINE_LIMIT = 3;
 
 export class ToolsetRegistry {
   private readonly entries: ToolEntry[] = [];
@@ -110,6 +174,14 @@ export class ToolsetRegistry {
   private readonly active = new Set<string>();
   /** Tools registered outside any group (the meta-tools) — always enabled, never listed as a group. */
   private readonly alwaysOn = new Set<string>();
+  /** JSON Schema is derived lazily and cached; converting all 228 up front is wasted work. */
+  private readonly schemaCache = new Map<string, unknown>();
+
+  // ── Client refetch detection ────────────────────────────────────────────────
+  private listChangedAt = 0;
+  private listServedAt = 0;
+  private detectionActive = false;
+  private verdict: "unknown" | "refetches" | "frozen" = "unknown";
 
   /**
    * Returns a stand-in for `server` that records every tool a register function creates and
@@ -130,26 +202,39 @@ export class ToolsetRegistry {
           return (...args: unknown[]): RegisteredTool => {
             const guarded = [...args];
             const name = String(args[0]);
+            const config = guarded[1] as
+              | { title?: string; description?: string; inputSchema?: unknown }
+              | undefined;
+            let captured: ToolHandler | undefined;
             // The production write guard wraps every handler here rather than in the 33 tool
             // modules, for the same reason group attribution lives here: this is the one place
             // every tool in the server provably passes through, so no tool can be added later that
             // silently misses the guard.
             const last = guarded.length - 1;
             if (typeof guarded[last] === "function") {
-              const config = guarded[1] as { annotations?: { readOnlyHint?: boolean } } | undefined;
-              const isReadOnly = config?.annotations?.readOnlyHint === true;
-              type Handler = (...a: unknown[]) => Promise<unknown>;
-              const inner = guarded[last] as Handler;
-              guarded[last] = async (...handlerArgs: unknown[]): Promise<unknown> => {
+              const annotated = guarded[1] as { annotations?: { readOnlyHint?: boolean } } | undefined;
+              const isReadOnly = annotated?.annotations?.readOnlyHint === true;
+              const inner = guarded[last] as ToolHandler;
+              const wrapped: ToolHandler = async (...handlerArgs: unknown[]): Promise<unknown> => {
                 // handlerArgs[0] is the validated tool params; the guard needs them to spot a call
                 // that redirects itself at a different org than this process is authenticated to.
                 const refusal = await checkProductionGuard(name, isReadOnly, handlerArgs[0]);
                 if (refusal !== null) return resultContent({ success: false, message: refusal });
                 return inner(...handlerArgs);
               };
+              guarded[last] = wrapped;
+              captured = wrapped;
             }
             const handle = original(...guarded);
-            entries.push({ name, group, handle });
+            entries.push({
+              name,
+              group,
+              handle,
+              title: config?.title,
+              description: config?.description,
+              inputSchema: config?.inputSchema,
+              handler: captured,
+            });
             return handle;
           };
         }
@@ -252,7 +337,116 @@ export class ToolsetRegistry {
     } finally {
       target.sendToolListChanged = original;
     }
-    if (changed) original();
+    if (changed) {
+      original();
+      // Only a notification that actually went out starts the refetch clock. The startup call to
+      // setActive() disables ~210 tools before the transport is connected, and counting that as an
+      // announcement made the handshake's own tools/list look like a refetch — which marked every
+      // client, including a frozen one, as well-behaved for the rest of the session.
+      if (server.isConnected()) this.listChangedAt = Date.now();
+    }
+  }
+
+  // ── Client refetch detection ────────────────────────────────────────────────
+
+  /** Called by the tools/list interceptor in `attachRefetchDetection`. */
+  noteToolsListServed(): void {
+    this.listServedAt = Date.now();
+    if (this.listChangedAt > 0 && this.listServedAt >= this.listChangedAt) this.verdict = "refetches";
+  }
+
+  markDetectionActive(): void {
+    this.detectionActive = true;
+  }
+
+  /**
+   * Resolves true if the client appears to have ignored the `list_changed` notification just sent,
+   * meaning the tools that were enabled will never appear in its tool list.
+   *
+   * This is a timing heuristic, and deliberately fails toward warning: a false positive costs one
+   * extra sentence pointing at sf_call_tool, which works on every client anyway. A false negative
+   * costs an entire session's write surface, which is the bug this exists to prevent. The verdict is
+   * cached, so the wait is paid at most once per session and never by a client already known to
+   * refetch.
+   */
+  async probeClientRefresh(): Promise<boolean> {
+    if (!this.detectionActive) return false;
+    if (this.verdict === "refetches") return false;
+    if (this.verdict === "frozen") return true;
+    const mark = this.listChangedAt;
+    if (mark === 0) return false;
+    await new Promise((resolve) => setTimeout(resolve, REFETCH_PROBE_MS));
+    if (this.listServedAt >= mark) {
+      this.verdict = "refetches";
+      return false;
+    }
+    this.verdict = "frozen";
+    return true;
+  }
+
+  // ── Direct invocation, for clients that never see the tool list grow ─────────
+
+  get(name: string): ToolEntry | undefined {
+    return this.entries.find((e) => e.name === name);
+  }
+
+  /** JSON Schema for a tool's arguments, in the same dialect the SDK puts in `tools/list`. */
+  schemaFor(name: string): unknown {
+    if (this.schemaCache.has(name)) return this.schemaCache.get(name);
+    const parsable = toParsable(this.get(name)?.inputSchema);
+    let schema: unknown;
+    try {
+      // Conversion is best-effort: a tool whose schema cannot be rendered should still be callable
+      // through sf_call_tool, so a failure here degrades to "no schema", never to a broken tool.
+      schema = parsable ? zodToJsonSchema(parsable, { $refStrategy: "none" }) : { type: "object", properties: {} };
+    } catch {
+      schema = { type: "object", properties: {}, note: "Schema could not be rendered; see the tool description." };
+    }
+    this.schemaCache.set(name, schema);
+    return schema;
+  }
+
+  /**
+   * Invokes a tool by name regardless of whether its toolset is loaded.
+   *
+   * Mirrors the SDK's own call path — validate against the input schema, then hand the parsed data
+   * to the handler — because skipping that validation would let unvalidated arguments reach 228
+   * handlers that all trust their input. The handler here is the guard-wrapped one captured at
+   * registration, so the production guard applies exactly as it does to a direct call.
+   */
+  async invoke(name: string, args: unknown, extra: unknown): Promise<unknown> {
+    const entry = this.get(name);
+    if (!entry) {
+      const near = this.search(name)
+        .slice(0, 8)
+        .map((m) => m.name);
+      return resultContent({
+        success: false,
+        message:
+          `No tool named '${name}' exists on this server.` +
+          (near.length > 0 ? ` Did you mean: ${near.join(", ")}?` : "") +
+          ` Use sf_find_tool to search all ${this.totalTools()} tools by name.`,
+      });
+    }
+    if (!entry.handler) {
+      return resultContent({ success: false, message: `Tool '${name}' has no callable handler.` });
+    }
+    const parsable = toParsable(entry.inputSchema);
+    if (!parsable) return entry.handler(extra);
+
+    const parsed = await parsable.safeParseAsync(args ?? {});
+    if (!parsed.success) {
+      // Returns the schema alongside the failure so the model can correct the call in one hop
+      // rather than guessing — it cannot see this tool's schema in its own tool list.
+      return text({
+        success: false,
+        message:
+          `Input validation error: invalid arguments for '${name}': ` +
+          parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; "),
+        inputSchema: this.schemaFor(name),
+      });
+    }
+    return entry.handler(parsed.data, extra);
   }
 
   enable(groups: string[]): { enabled: string[]; unknown: string[] } {
@@ -374,8 +568,12 @@ export function registerToolsetTools(server: McpServer, registry: ToolsetRegistr
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    ({ toolsets }) => {
+    async ({ toolsets }) => {
       const { enabled, unknown } = registry.enable(toolsets);
+      // Loading is only half the job: the tools are enabled here, but they reach the model only if
+      // the client re-fetches tools/list. When it does not, this response used to claim success for
+      // a set of tools that had in fact become unreachable — see the header note.
+      const frozen = enabled.length > 0 ? await registry.probeClientRefresh() : false;
       return text({
         success: unknown.length === 0,
         newlyLoaded: enabled,
@@ -383,10 +581,18 @@ export function registerToolsetTools(server: McpServer, registry: ToolsetRegistr
         ...(unknown.length > 0 ? { unknownToolsets: unknown, availableToolsets: registry.groups() } : {}),
         loadedToolsets: registry.activeGroups(),
         residentTools: registry.residentTools(),
+        ...(frozen ? { clientDidNotRefresh: true } : {}),
         message:
-          enabled.length > 0
-            ? `Loaded ${enabled.join(", ")}. Their tools are now available.`
-            : "No new toolsets loaded.",
+          enabled.length === 0
+            ? "No new toolsets loaded."
+            : frozen
+              ? `Loaded ${enabled.join(", ")} on the server, but this client did not refresh its tool list, ` +
+                `so these tools will NOT appear in your available tools. Do not retry the load. ` +
+                `Call them with sf_call_tool({ tool: "<name>", arguments: {...} }) instead, ` +
+                `and use sf_tool_schema({ tool: "<name>" }) to see the arguments each one takes.`
+              : `Loaded ${enabled.join(", ")}. Their tools are now available. ` +
+                `If they do not appear in your tool list, this client did not refresh — ` +
+                `call them via sf_call_tool instead.`,
       });
     },
   );
@@ -423,25 +629,134 @@ export function registerToolsetTools(server: McpServer, registry: ToolsetRegistr
       if (autoLoad !== false && groupsNeeded.length > 0) {
         loaded = registry.enable(groupsNeeded).enabled;
       }
+      // Schemas are returned inline only for a narrow result set. Attaching one to every match
+      // would reintroduce exactly the context blow-up lazy toolsets exist to avoid — a broad query
+      // can match dozens of tools — so a wide search returns names and points at sf_tool_schema.
+      const inlineSchemas = matches.length <= SCHEMA_INLINE_LIMIT;
       return text({
-        matches: matches.map((m) => ({ tool: m.name, toolset: m.group })),
+        matches: matches.map((m) => ({
+          tool: m.name,
+          toolset: m.group,
+          ...(inlineSchemas ? { inputSchema: registry.schemaFor(m.name) } : {}),
+        })),
         ...(loaded.length > 0 ? { loadedToolsets: loaded } : {}),
         ...(autoLoad === false && groupsNeeded.length > 0 ? { loadWith: groupsNeeded } : {}),
         residentTools: registry.residentTools(),
         message:
-          loaded.length > 0
-            ? `Found ${matches.length} tool(s) and loaded ${loaded.join(", ")} — they are callable now.`
-            : `Found ${matches.length} tool(s), all already loaded.`,
+          (loaded.length > 0
+            ? `Found ${matches.length} tool(s) and loaded ${loaded.join(", ")}.`
+            : `Found ${matches.length} tool(s), all already loaded.`) +
+          (inlineSchemas
+            ? ` Call one directly if it appears in your tool list; if it does not, this client did not ` +
+              `refresh its tool list — use sf_call_tool({ tool, arguments }) with the inputSchema above.`
+            : ` Narrow the query, or use sf_tool_schema({ tool }) for a tool's arguments. If a tool does ` +
+              `not appear in your tool list, call it with sf_call_tool({ tool, arguments }).`),
       });
     },
   );
 
-  for (const t of [listTool, loadTool, findTool]) {
+  // ─── Escape hatch: reach any tool without depending on a client refetch ──────
+
+  const schemaTool = server.registerTool(
+    "sf_tool_schema",
+    {
+      title: "Get Tool Schema",
+      description:
+        `Returns the input schema, title and description of any of this server's ${registry.totalTools()} tools, ` +
+        `whether or not its toolset is loaded. Use this to find out what arguments a tool takes when it is ` +
+        `not in your tool list, then invoke it with sf_call_tool.`,
+      inputSchema: {
+        tool: z.string().min(2).describe('Exact tool name, e.g. "sf_execute_anonymous_apex".'),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    ({ tool }) => {
+      const entry = registry.get(tool);
+      if (!entry) {
+        const near = registry
+          .search(tool)
+          .slice(0, 8)
+          .map((m) => m.name);
+        return text({
+          success: false,
+          message:
+            `No tool named '${tool}'.` +
+            (near.length > 0 ? ` Did you mean: ${near.join(", ")}?` : " Use sf_find_tool to search by keyword."),
+        });
+      }
+      return text({
+        success: true,
+        tool: entry.name,
+        toolset: entry.group,
+        loaded: registry.isActive(entry.group),
+        title: entry.title,
+        description: entry.description,
+        inputSchema: registry.schemaFor(entry.name),
+        hint: `Invoke with sf_call_tool({ tool: "${entry.name}", arguments: { ... } }).`,
+      });
+    },
+  );
+
+  const callTool = server.registerTool(
+    "sf_call_tool",
+    {
+      title: "Call Tool",
+      description:
+        `Invokes any of this server's ${registry.totalTools()} tools by name, including tools whose toolset is not ` +
+        `loaded and tools that do not appear in your tool list. Use this whenever a Salesforce tool you need is ` +
+        `not directly callable — it works even on clients that do not refresh their tool list after ` +
+        `sf_load_toolset. Get the argument shape first with sf_tool_schema or sf_find_tool. ` +
+        `Arguments are validated and permission-checked exactly as they are on a direct call.`,
+      inputSchema: {
+        tool: z.string().min(2).describe('Exact tool name, e.g. "sf_execute_anonymous_apex".'),
+        arguments: z
+          .record(z.unknown())
+          .optional()
+          .describe("Arguments object for that tool, matching its inputSchema. Omit for a tool that takes none."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ tool, arguments: args }, extra) => {
+      // Load the owning toolset too, so a conforming client also gets the tool listed for next time.
+      const entry = registry.get(tool);
+      if (entry && !registry.isActive(entry.group)) registry.enable([entry.group]);
+      return (await registry.invoke(tool, args, extra)) as ReturnType<typeof text>;
+    },
+  );
+
+  for (const t of [listTool, loadTool, findTool, schemaTool, callTool]) {
     void t;
   }
   registry.markAlwaysOn("sf_list_toolsets");
   registry.markAlwaysOn("sf_load_toolset");
   registry.markAlwaysOn("sf_find_tool");
+  registry.markAlwaysOn("sf_tool_schema");
+  registry.markAlwaysOn("sf_call_tool");
+}
+
+/**
+ * Intercepts `tools/list` so the registry can tell whether the client re-fetches after a
+ * `list_changed` notification.
+ *
+ * This reaches into the SDK's private handler map because the Protocol class exposes no hook for
+ * observing an incoming request, and the alternative — replacing the handler with our own — would
+ * mean reimplementing the SDK's tool serialisation. It is written to fail safe: if the internals
+ * ever change shape, detection silently turns off and sf_load_toolset falls back to its
+ * unconditional advice, which is correct either way. Returns whether detection was installed.
+ */
+export function attachRefetchDetection(server: McpServer, registry: ToolsetRegistry): boolean {
+  type Handler = (request: unknown, extra: unknown) => unknown;
+  const low = (server as unknown as { server?: { _requestHandlers?: unknown } }).server;
+  const handlers = low?._requestHandlers;
+  if (!(handlers instanceof Map)) return false;
+  const existing = handlers.get("tools/list") as Handler | undefined;
+  if (typeof existing !== "function") return false;
+  handlers.set("tools/list", (request: unknown, extra: unknown) => {
+    registry.noteToolsListServed();
+    return existing(request, extra);
+  });
+  registry.markDetectionActive();
+  return true;
 }
 
 export { summary as toolsetSummary };

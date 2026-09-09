@@ -5,7 +5,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import { createRequire } from "module";
 import { registerTools } from "./tools/index.js";
-import { registerToolsetTools, toolsetSummary } from "./toolsets.js";
+import { attachRefetchDetection, registerToolsetTools, toolsetSummary } from "./toolsets.js";
 import { guardMode, DESTRUCTIVE_TOOLS } from "./services/guard.js";
 
 // Single source of truth for the version. Hardcoding it here drifted from package.json across
@@ -23,6 +23,10 @@ const server = new McpServer({
 const registry = registerTools(server);
 registerToolsetTools(server, registry);
 
+// Lets sf_load_toolset tell the user when their client ignored notifications/tools/list_changed —
+// the 2026-09-09 failure mode, where loading a toolset succeeds but its tools never reach the model.
+const refetchDetection = attachRefetchDetection(server, registry);
+
 // Lazy toolsets: a full tools/list is ~362KB (~98k tokens) with everything loaded, which is about
 // half a 200k context window spent before the user types anything — and a 228-candidate list also
 // hurts tool-selection accuracy. Every tool stays registered and callable; tools outside the active
@@ -38,8 +42,15 @@ function logStartup(kind: string): void {
   console.error(
     `Toolsets: ${registry.activeGroups().join(", ") || "none"} — ` +
       `${registry.residentTools()} of ${registry.totalTools()} tools loaded. ` +
-      `Use sf_find_tool or sf_load_toolset to load more; SF_TOOLSETS=all loads everything.`,
+      `Use sf_find_tool or sf_load_toolset to load more; SF_TOOLSETS=all loads everything. ` +
+      `Any tool is also callable directly via sf_call_tool, loaded or not.`,
   );
+  if (!refetchDetection) {
+    console.error(
+      "Note: could not observe tools/list on this SDK build, so a client that ignores " +
+        "tools/list_changed cannot be detected. sf_call_tool still reaches every tool.",
+    );
+  }
   // Announced at startup rather than only on refusal: a guard nobody knows is on reads as a bug
   // the first time it fires, and the org lookup that decides production-ness is lazy, so this is
   // the only point where the configured intent can be stated without an extra API call.
