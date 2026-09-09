@@ -165,8 +165,21 @@ function toParsable(input: unknown): z.ZodTypeAny | undefined {
  */
 const REFETCH_PROBE_MS = 300;
 
-/** Above this many matches, `sf_find_tool` returns names only — see the note at its call site. */
+/** Most schemas `sf_find_tool` will inline — see the note at its call site. */
 const SCHEMA_INLINE_LIMIT = 3;
+
+/**
+ * Size limits on inlined schemas, in serialised characters.
+ *
+ * A count alone is not a bound: `sf_create_flow` serialises to ~28KB pretty-printed (~7,600 tokens
+ * of the ~10,000 a default startup costs), so `sf_find_tool("create flow")` was returning more
+ * context than the entire tool list. That is the exact cost lazy toolsets exist to avoid, and
+ * v3.0.0 had already moved sf_create_flow out of the default toolset for this very reason —
+ * inlining it on search put it straight back. Oversized schemas are now named, not sent, and the
+ * caller can still ask for one explicitly with sf_tool_schema.
+ */
+const SCHEMA_INLINE_MAX_ONE = 4000;
+const SCHEMA_INLINE_BUDGET = 8000;
 
 /** Most matches `sf_find_tool` will list. Ranked, so the cut falls on the least relevant. */
 const MATCH_LIMIT = 25;
@@ -684,16 +697,27 @@ export function registerToolsetTools(server: McpServer, registry: ToolsetRegistr
       // Schemas are returned inline only for a narrow result set. Attaching one to every match
       // would reintroduce exactly the context blow-up lazy toolsets exist to avoid — a broad query
       // can match dozens of tools — so a wide search returns names and points at sf_tool_schema.
+      // Schemas go on the best-ranked few rather than only when the whole result set is small:
+      // gating on total match count meant a broad-but-correct query lost the schema sf_call_tool
+      // needs. Both a count and a size budget apply — see SCHEMA_INLINE_MAX_ONE.
+      let spent = 0;
+      const withSchema = matches.map((m, i) => {
+        if (i >= SCHEMA_INLINE_LIMIT) return { tool: m.name, toolset: m.group };
+        const schema = registry.schemaFor(m.name);
+        const size = JSON.stringify(schema, null, 2).length;
+        if (size > SCHEMA_INLINE_MAX_ONE || spent + size > SCHEMA_INLINE_BUDGET) {
+          return {
+            tool: m.name,
+            toolset: m.group,
+            schemaOmitted: `${Math.round(size / 1024)}KB — too large to inline; call sf_tool_schema({ tool: "${m.name}" }) for it.`,
+          };
+        }
+        spent += size;
+        return { tool: m.name, toolset: m.group, inputSchema: schema };
+      });
+
       return text({
-        matches: matches.map((m, i) => ({
-          tool: m.name,
-          toolset: m.group,
-          // Schemas go on the best-ranked few rather than only when the whole result set is small:
-          // gating on total match count meant a broad-but-correct query lost its schemas, which is
-          // what sf_call_tool needs to construct a call. The bound on context is the same either
-          // way — at most SCHEMA_INLINE_LIMIT schemas — but the top hits always carry one.
-          ...(i < SCHEMA_INLINE_LIMIT ? { inputSchema: registry.schemaFor(m.name) } : {}),
-        })),
+        matches: withSchema,
         ...(total > matches.length ? { totalMatches: total, shown: matches.length } : {}),
         ...(loaded.length > 0 ? { loadedToolsets: loaded } : {}),
         ...(otherGroups.length > 0 ? { otherToolsets: otherGroups } : {}),

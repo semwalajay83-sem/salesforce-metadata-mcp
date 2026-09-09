@@ -200,6 +200,21 @@ async function main() {
     check(`  ...and includes ${expected}`, names.includes(expected), `top: ${names.slice(0, 5).join(", ")}`);
   }
 
+  // Inlined schemas must stay budgeted. sf_create_flow serialises to ~28KB — v3.0.0 moved it out
+  // of the default toolset precisely because of its size, and inlining it on search put it back:
+  // sf_find_tool("create flow") cost ~8,500 tokens, most of a default startup, until this was
+  // bounded. Guard the whole response, not just the count of schemas.
+  const flowFind = await c.call("sf_find_tool", { query: "create flow", autoLoad: false });
+  check(
+    "sf_find_tool response stays under 12KB even for a huge-schema match",
+    flowFind.text.length < 12000,
+    `${Math.round(flowFind.text.length / 1024)}KB`,
+  );
+  const ff = json(flowFind.text);
+  const bigMatch = (ff.matches || []).find((m) => m.tool === "sf_create_flow");
+  check("an oversized schema is named, not inlined", !!bigMatch?.schemaOmitted && !bigMatch?.inputSchema, JSON.stringify(bigMatch).slice(0, 120));
+  check("smaller matches still carry their schema inline", (ff.matches || []).some((m) => m.inputSchema), "none inlined");
+
   // Ranking must put the exact name first, not merely somewhere in the list.
   const exact = json((await c.call("sf_find_tool", { query: "sf_describe_object", autoLoad: false })).text);
   check("an exact tool name ranks first", (exact.matches || [])[0]?.tool === "sf_describe_object", JSON.stringify((exact.matches || [])[0]));

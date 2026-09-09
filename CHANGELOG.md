@@ -52,7 +52,14 @@ errors now keep a generous head **and** the tail, with a count of what was dropp
 
 - `sf_find_tool` now attaches input schemas to the top 3 **ranked** matches rather than only when
   the whole result set was ≤3. Broader matching pushed even exact-name queries past that threshold,
-  which cost them the schema `sf_call_tool` needs. The context bound is unchanged.
+  which cost them the schema `sf_call_tool` needs.
+- **Inlined schemas are now bounded by size, not just count** — found by measuring the release
+  rather than from a report. A count is not a bound: `sf_create_flow` serialises to ~28KB, so
+  `sf_find_tool("create flow")` was returning ~8,500 tokens, most of what a whole default startup
+  costs. v3.0.0 had moved that tool out of the default toolset for exactly this reason, and inlining
+  it on search quietly put it back. Oversized schemas are now named with a pointer to
+  `sf_tool_schema` instead of being sent. Measured after: 8,532 → 1,721 tokens for the same call,
+  and every `sf_find_tool` response now lands between ~1.4k and ~2.5k tokens.
 - New `qa-query-limit.mjs` (17 checks) covers the cap, its precedence, truncation reporting, the
   aggregate/OFFSET edge cases and the error-text length. `qa-toolsets.mjs` gains natural-language
   search coverage and the auto-load bounds (26 → 38 checks).
