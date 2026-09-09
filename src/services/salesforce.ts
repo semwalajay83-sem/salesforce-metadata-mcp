@@ -517,6 +517,21 @@ export interface SalesforceClient {
 }
 
 /**
+ * Trims an oversized API error body while keeping both ends of it.
+ *
+ * A flat `slice(0, 300)` cut Salesforce's errors mid-sentence, and Salesforce puts the actionable
+ * part at the END — "…be sure to append the '__c' after the entity name. Please refer to <doc>" was
+ * arriving as "…Please ref". A cap is still wanted, because an error body can be a full HTML page,
+ * so this keeps a generous head plus the tail and says how much it dropped.
+ */
+export function clipApiError(text: string, max = 1200): string {
+  if (text.length <= max) return text;
+  const head = Math.floor(max * 0.6);
+  const tail = max - head;
+  return `${text.slice(0, head)} … [${text.length - max} chars omitted] … ${text.slice(-tail)}`;
+}
+
+/**
  * Creates a lightweight Salesforce REST client for the given auth context.
  * All HTTP errors are sanitized before being thrown.
  *
@@ -530,7 +545,7 @@ export function createClient(auth: SalesforceAuth): SalesforceClient {
     const response = await fetchWithTimeout(`${baseURL}${path}`, init, 60_000);
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(sanitizeError(`Salesforce API error ${response.status}: ${text.slice(0, 300)}`));
+      throw new Error(sanitizeError(`Salesforce API error ${response.status}: ${clipApiError(text)}`));
     }
     const text = await response.text().catch(() => "");
     const data = text.length > 0 ? JSON.parse(text) as T : null as unknown as T;
@@ -4291,12 +4306,109 @@ export async function describeObject(auth: SalesforceAuth, params: Record<string
         return { success: false, message: `${msg}${hint}` };
     }
 }
+/** Documented default for `sf_query_records`. Must stay in sync with QueryRecordsSchema. */
+const DEFAULT_QUERY_LIMIT = 200;
+
+interface QueryCapPlan {
+    /** The SOQL actually sent, with the cap applied. */
+    soql: string;
+    /** Rows to keep, or null when the query is not cappable (aggregates). */
+    appliedLimit: number | null;
+    limitSource: "parameter" | "query" | "default" | "none (aggregate query)";
+}
+
+/**
+ * Decides the row cap for a query and rewrites the SOQL to enforce it.
+ *
+ * Reported 2026-09-09: `limit` was interpolated only into the SOQL this function *builds* from
+ * objectApiName/fields, so every call passing a `query` string — which is every call through
+ * sf_query_records — ignored it entirely, including its documented default of 200. A caller setting
+ * `limit: 100` to avoid a context blowout got 1,323 rows and no warning.
+ *
+ * Precedence is `min(parameter, LIMIT in the query)`. The parameter is a guardrail, so a LIMIT
+ * written into the query string may tighten it but must never raise it — otherwise the guardrail is
+ * whatever the string says, which is no guardrail at all. Both intents are honoured by taking the
+ * smaller: a caller who wrote `LIMIT 5` still gets 5.
+ */
+function planQueryCap(rawSoql: string, requested: number | undefined): QueryCapPlan {
+    const soql = rawSoql.trim();
+
+    // An aggregate query returns one computed row; capping it is meaningless and appending LIMIT to
+    // some COUNT() shapes is rejected outright, so these pass through untouched.
+    if (/^\s*SELECT\s+COUNT\s*\(\s*\)/i.test(soql)) {
+        return { soql, appliedLimit: null, limitSource: "none (aggregate query)" };
+    }
+
+    // A trailing FOR UPDATE / FOR VIEW / FOR REFERENCE has to stay last, so peel it off and put it
+    // back after the LIMIT rather than appending LIMIT behind it and producing invalid SOQL.
+    let forClause = "";
+    let body = soql.replace(/\s+FOR\s+(?:UPDATE|VIEW|REFERENCE)\s*$/i, (m) => {
+        forClause = m.trim();
+        return "";
+    });
+
+    // Anchored to the end of the string so a LIMIT inside a parenthesised subquery is left alone.
+    let inQuery: number | undefined;
+    let offset: number | undefined;
+    const withLimit = body.match(/\s+LIMIT\s+(\d+)(?:\s+OFFSET\s+(\d+))?\s*$/i);
+    if (withLimit?.index !== undefined) {
+        inQuery = Number(withLimit[1]);
+        if (withLimit[2] !== undefined) offset = Number(withLimit[2]);
+        body = body.slice(0, withLimit.index);
+    } else {
+        const offsetOnly = body.match(/\s+OFFSET\s+(\d+)\s*$/i);
+        if (offsetOnly?.index !== undefined) {
+            offset = Number(offsetOnly[1]);
+            body = body.slice(0, offsetOnly.index);
+        }
+    }
+
+    const param = typeof requested === "number" && Number.isFinite(requested) ? requested : DEFAULT_QUERY_LIMIT;
+    const applied = Math.max(1, Math.min(param, inQuery ?? Number.POSITIVE_INFINITY));
+    const limitSource: QueryCapPlan["limitSource"] =
+        inQuery !== undefined && inQuery <= param ? "query" : requested !== undefined ? "parameter" : "default";
+
+    // One row beyond the cap is fetched purely to distinguish "exactly N matched" from "more than N
+    // matched". It is sliced off before returning, and is what makes `truncated` a fact rather than
+    // a guess — a capped result that cannot say it was capped is the same silent failure in a new form.
+    const rebuilt =
+        `${body.trimEnd()} LIMIT ${applied + 1}` +
+        (offset !== undefined ? ` OFFSET ${offset}` : "") +
+        (forClause ? ` ${forClause}` : "");
+    return { soql: rebuilt, appliedLimit: applied, limitSource };
+}
+
 export async function queryRecords(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const client = createClient(auth);
-        const soql = params.soql ?? params.query ?? `SELECT ${(params.fields ?? ["Id", "Name"]).join(", ")} FROM ${params.objectApiName}${params.whereClause ? ` WHERE ${params.whereClause}` : ""}${params.orderBy ? ` ORDER BY ${params.orderBy}` : ""} LIMIT ${params.limit ?? 200}`;
-        const resp = await client.get(`/query?q=${encodeURIComponent(soql)}`);
-        return { success: true, totalSize: (resp.data as any).totalSize, records: (resp.data as any).records, message: `${(resp.data as any).totalSize ?? 0} record(s) returned.` };
+        const raw = params.soql ?? params.query ?? `SELECT ${(params.fields ?? ["Id", "Name"]).join(", ")} FROM ${params.objectApiName}${params.whereClause ? ` WHERE ${params.whereClause}` : ""}${params.orderBy ? ` ORDER BY ${params.orderBy}` : ""}`;
+        const plan = planQueryCap(raw, params.limit);
+        const resp = await client.get(`/query?q=${encodeURIComponent(plan.soql)}`);
+        const fetched = ((resp.data as any).records ?? []) as unknown[];
+
+        if (plan.appliedLimit === null) {
+            return {
+                success: true,
+                totalSize: (resp.data as any).totalSize,
+                records: fetched,
+                truncated: false,
+                message: `${(resp.data as any).totalSize ?? 0} record(s) returned.`,
+            };
+        }
+
+        const truncated = fetched.length > plan.appliedLimit;
+        const records = truncated ? fetched.slice(0, plan.appliedLimit) : fetched;
+        return {
+            success: true,
+            totalSize: records.length,
+            records,
+            appliedLimit: plan.appliedLimit,
+            limitSource: plan.limitSource,
+            truncated,
+            message: truncated
+                ? `${records.length} record(s) returned — capped at ${plan.appliedLimit} (from the ${plan.limitSource}). More records match this query; raise 'limit', add a WHERE clause, or use COUNT() to size the result first.`
+                : `${records.length} record(s) returned.`,
+        };
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
     }

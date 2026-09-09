@@ -69,7 +69,9 @@ export function registerDataTools(server: McpServer): void {
 
 Supports aggregate queries — GROUP BY with COUNT(), SUM(), AVG(), MAX(), MIN(), e.g.:
 'SELECT StageName, COUNT(Id), SUM(Amount) FROM Opportunity GROUP BY StageName'
-Aggregate results come back as regular records with the aggregate expressions as field keys (e.g. "expr0").`,
+Aggregate results come back as regular records with the aggregate expressions as field keys (e.g. "expr0").
+
+Row cap: 'limit' defaults to 200 and is a ceiling, not a hint. If the SOQL carries its own LIMIT the smaller of the two applies, so a LIMIT in the query can tighten the cap but never raise it. When rows are cut off the response sets truncated: true and reports appliedLimit and limitSource, so a capped result is never mistaken for a complete one.`,
     inputSchema: QueryRecordsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   }, async (params) => {

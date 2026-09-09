@@ -1,5 +1,64 @@
 # Changelog
 
+## [3.1.1] - 2026-09-09
+
+Three bugs reported against a Claude Desktop session. **None were introduced by 3.1.0.** Two date to
+the first public release (`f808b50`, v2.6.5) and one to the lazy-toolsets change in 3.0.0
+(`479a40d`) — traced with `git log -S`/`-L`, not assumed.
+
+### Fixed: `sf_query_records` ignored its own `limit` (since v2.6.5)
+
+`limit` was only interpolated into the SOQL `queryRecords` *builds* from `objectApiName`/`fields`.
+Every call through `sf_query_records` passes a `query` string, which takes the other branch, so the
+parameter — and its documented default of 200 — did nothing. A caller setting `limit: 100` to stay
+small got 1,323 rows and no warning; the failure was silent and failed open.
+
+The cap is now applied by rewriting the outgoing SOQL, so it reduces what Salesforce sends rather
+than only what the tool returns. **Precedence is `min(parameter, LIMIT in the query)`**: the
+parameter is a guardrail, so a `LIMIT` in the query string may tighten it but never raise it, while
+a caller who explicitly wrote `LIMIT 5` still gets 5.
+
+A cap that is applied but not reported would just be a silent truncation — the same bug wearing a
+different hat — so the response now carries `appliedLimit`, `limitSource` and `truncated`, and the
+message says when rows were cut off. `truncated` is a fact, not a guess: one row beyond the cap is
+fetched to distinguish "exactly N matched" from "more than N matched", then discarded. Aggregate
+(`COUNT()`), `OFFSET` and `FOR UPDATE` queries are handled without being rewritten into invalid SOQL.
+
+### Fixed: `sf_find_tool` returned nothing for multi-word queries (since v3.0.0)
+
+The search required *every* token to appear in a tool name, so any natural-language phrase returned
+`matches: []` — including two of the tool's own documented examples. That is the worst moment to
+return an empty list: this tool is reached precisely when someone cannot find a capability and is
+describing it in words, and an empty result reads as "no such tool exists" rather than "rephrase".
+
+Matching is now scored rather than filtered — any token can match, ranked by how many hit, with an
+exact tool name always first. Tool **titles and descriptions are searched too**, at a lower weight
+than names, because a phrase like *"run some apex code in the org"* cannot be resolved from names
+alone (`sf_run_apex_tests` wins on tokens while the caller means `sf_execute_anonymous_apex`).
+Common filler words are dropped.
+
+Two guards came with it, since a looser match could otherwise undo the point of lazy toolsets:
+results are capped at the 25 best matches, and a single search auto-loads at most 3 toolsets — those
+from the top-scoring band only. Lower-ranked matches are named in the response instead of loaded.
+
+### Fixed: Salesforce error messages truncated mid-sentence (since v2.6.5)
+
+API error bodies were cut with a flat `slice(0, 300)`, and Salesforce puts the actionable part at
+the end — *"…be sure to append the '__c' after the entity name. Please refer to…"* arrived as
+*"…Please ref"*. A cap is still wanted, since an error body can be a whole HTML page, so oversized
+errors now keep a generous head **and** the tail, with a count of what was dropped.
+
+### Notes
+
+- `sf_find_tool` now attaches input schemas to the top 3 **ranked** matches rather than only when
+  the whole result set was ≤3. Broader matching pushed even exact-name queries past that threshold,
+  which cost them the schema `sf_call_tool` needs. The context bound is unchanged.
+- New `qa-query-limit.mjs` (17 checks) covers the cap, its precedence, truncation reporting, the
+  aggregate/OFFSET edge cases and the error-text length. `qa-toolsets.mjs` gains natural-language
+  search coverage and the auto-load bounds (26 → 38 checks).
+- Verified against `demo-org` before and after: `limit: 3` returned 1,764 rows before the fix and 3
+  after.
+
 ## [3.1.0] - 2026-09-09
 
 ### Fixed: loaded toolsets could be unreachable on clients that ignore `list_changed`

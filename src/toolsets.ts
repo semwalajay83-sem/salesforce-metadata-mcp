@@ -168,6 +168,19 @@ const REFETCH_PROBE_MS = 300;
 /** Above this many matches, `sf_find_tool` returns names only — see the note at its call site. */
 const SCHEMA_INLINE_LIMIT = 3;
 
+/** Most matches `sf_find_tool` will list. Ranked, so the cut falls on the least relevant. */
+const MATCH_LIMIT = 25;
+
+/** Most toolsets one `sf_find_tool` call will auto-load — see the note at its call site. */
+const AUTOLOAD_GROUP_LIMIT = 3;
+
+/** Filler words stripped from a search phrase before matching; they match everything and rank nothing. */
+const STOPWORDS = new Set([
+  "sf", "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "from", "with", "into", "at", "by",
+  "is", "are", "be", "it", "its", "this", "that", "these", "those", "my", "our", "your", "some", "any",
+  "all", "new", "get", "how", "do", "can", "i", "we", "me", "please", "want", "need", "there", "org",
+]);
+
 export class ToolsetRegistry {
   private readonly entries: ToolEntry[] = [];
   private server: McpServer | undefined;
@@ -474,16 +487,43 @@ export class ToolsetRegistry {
     return removed;
   }
 
-  /** Case-insensitive substring match over tool names, across every group whether loaded or not. */
-  search(query: string): { name: string; group: string; loaded: boolean }[] {
-    const q = query.toLowerCase().replace(/[\s-]+/g, "_");
-    const terms = q.split("_").filter((t) => t.length > 1);
-    return this.entries
-      .filter((e) => {
-        const n = e.name.toLowerCase();
-        return n.includes(q) || (terms.length > 0 && terms.every((t) => n.includes(t)));
-      })
-      .map((e) => ({ name: e.name, group: e.group, loaded: this.active.has(e.group) }));
+  /**
+   * Case-insensitive search over tool names, across every group whether loaded or not.
+   *
+   * Ranked, not filtered. This used to require *every* token to appear in the name, which meant a
+   * natural-language query returned nothing at all: "create records anonymous apex" matched no tool,
+   * because no name contains both "create" and "anonymous". That is the worst possible time to
+   * return an empty list — this tool is reached precisely when someone cannot find a capability and
+   * is describing it in words, and `matches: []` reads as "no such tool exists" rather than
+   * "rephrase". Two of the descriptions's own example queries ("permission set", "create flow")
+   * failed this way.
+   *
+   * Now a tool matches on any token and is scored by how many it hits, so the exact tool is still
+   * first while related ones stay visible. Results are ordered by score, then by name for stability.
+   */
+  search(query: string): { name: string; group: string; loaded: boolean; score: number }[] {
+    const q = query.toLowerCase().replace(/[\s-]+/g, "_").replace(/^_+|_+$/g, "");
+    // Tokens shorter than 2 chars match nearly everything. "sf" goes for the same reason — every
+    // tool name starts with it — and the stopwords carry no signal in a phrase like
+    // "run some apex code in the org".
+    const terms = [...new Set(q.split("_").filter((t) => t.length > 1 && !STOPWORDS.has(t)))];
+    const scored = this.entries.map((e) => {
+      const n = e.name.toLowerCase();
+      // Names are matched on token substrings, but a phrase like "run some apex code" cannot be
+      // resolved from names alone — sf_run_apex_tests wins on tokens while the caller means
+      // sf_execute_anonymous_apex. The description is where that intent is actually written, so it
+      // is searched too, at a lower weight so a name match still outranks a description match.
+      const haystack = `${e.title ?? ""} ${e.description ?? ""}`.toLowerCase();
+      let score = n.includes(q) ? 1000 : 0;
+      for (const t of terms) {
+        if (n.includes(t)) score += 3;
+        else if (haystack.includes(t)) score += 1;
+      }
+      return { name: e.name, group: e.group, loaded: this.active.has(e.group), score };
+    });
+    return scored
+      .filter((m) => m.score > 0)
+      .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
   }
 
   /**
@@ -616,15 +656,27 @@ export function registerToolsetTools(server: McpServer, registry: ToolsetRegistr
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     ({ query, autoLoad }) => {
-      const matches = registry.search(query);
-      if (matches.length === 0) {
+      const ranked = registry.search(query);
+      if (ranked.length === 0) {
         return text({
           matches: [],
           message: `No tool name matched "${query}". Call sf_list_toolsets to browse toolsets by capability.`,
           availableToolsets: registry.groups(),
         });
       }
-      const groupsNeeded = [...new Set(matches.filter((m) => !m.loaded).map((m) => m.group))];
+      const total = ranked.length;
+      const matches = ranked.slice(0, MATCH_LIMIT);
+
+      // Auto-loading is bounded to the best-scoring band. Since a match now only needs to hit one
+      // token, a loose phrase can rank dozens of tools across many toolsets, and loading all of
+      // them would spend the context that lazy toolsets exist to save — the model asked to find a
+      // tool, not to load half the server.
+      const best = matches[0]?.score ?? 0;
+      const groupsNeeded = [...new Set(matches.filter((m) => !m.loaded && m.score === best).map((m) => m.group))].slice(
+        0,
+        AUTOLOAD_GROUP_LIMIT,
+      );
+      const otherGroups = [...new Set(matches.filter((m) => !m.loaded && !groupsNeeded.includes(m.group)).map((m) => m.group))];
       let loaded: string[] = [];
       if (autoLoad !== false && groupsNeeded.length > 0) {
         loaded = registry.enable(groupsNeeded).enabled;
@@ -632,25 +684,32 @@ export function registerToolsetTools(server: McpServer, registry: ToolsetRegistr
       // Schemas are returned inline only for a narrow result set. Attaching one to every match
       // would reintroduce exactly the context blow-up lazy toolsets exist to avoid — a broad query
       // can match dozens of tools — so a wide search returns names and points at sf_tool_schema.
-      const inlineSchemas = matches.length <= SCHEMA_INLINE_LIMIT;
       return text({
-        matches: matches.map((m) => ({
+        matches: matches.map((m, i) => ({
           tool: m.name,
           toolset: m.group,
-          ...(inlineSchemas ? { inputSchema: registry.schemaFor(m.name) } : {}),
+          // Schemas go on the best-ranked few rather than only when the whole result set is small:
+          // gating on total match count meant a broad-but-correct query lost its schemas, which is
+          // what sf_call_tool needs to construct a call. The bound on context is the same either
+          // way — at most SCHEMA_INLINE_LIMIT schemas — but the top hits always carry one.
+          ...(i < SCHEMA_INLINE_LIMIT ? { inputSchema: registry.schemaFor(m.name) } : {}),
         })),
+        ...(total > matches.length ? { totalMatches: total, shown: matches.length } : {}),
         ...(loaded.length > 0 ? { loadedToolsets: loaded } : {}),
+        ...(otherGroups.length > 0 ? { otherToolsets: otherGroups } : {}),
         ...(autoLoad === false && groupsNeeded.length > 0 ? { loadWith: groupsNeeded } : {}),
         residentTools: registry.residentTools(),
         message:
           (loaded.length > 0
-            ? `Found ${matches.length} tool(s) and loaded ${loaded.join(", ")}.`
-            : `Found ${matches.length} tool(s), all already loaded.`) +
-          (inlineSchemas
-            ? ` Call one directly if it appears in your tool list; if it does not, this client did not ` +
-              `refresh its tool list — use sf_call_tool({ tool, arguments }) with the inputSchema above.`
-            : ` Narrow the query, or use sf_tool_schema({ tool }) for a tool's arguments. If a tool does ` +
-              `not appear in your tool list, call it with sf_call_tool({ tool, arguments }).`),
+            ? `Found ${total} tool(s) and loaded ${loaded.join(", ")}.`
+            : `Found ${total} tool(s), all already loaded.`) +
+          (total > matches.length ? ` Showing the ${matches.length} best matches — narrow the query for the rest.` : "") +
+          (otherGroups.length > 0
+            ? ` Lower-ranked matches live in ${otherGroups.join(", ")}, not loaded; call sf_call_tool or sf_load_toolset for those.`
+            : "") +
+          ` Call one directly if it appears in your tool list; if it does not, this client did not ` +
+          `refresh its tool list — use sf_call_tool({ tool, arguments }) with the inputSchema above, ` +
+          `or sf_tool_schema({ tool }) for a match that did not carry one.`,
       });
     },
   );

@@ -1593,7 +1593,7 @@ export const CreatePublicGroupSchema = z.object({
 
 export const QueryRecordsSchema = z.object({
   query: z.string().min(1).describe("Full SOQL query string, e.g. 'SELECT Id, Name FROM Account WHERE Industry = \\'Technology\\' LIMIT 10'"),
-  limit: z.number().int().min(1).max(2000).default(200).describe("Maximum records to return (default 200)"),
+  limit: z.number().int().min(1).max(2000).default(200).describe("Maximum records to return (default 200). Acts as a ceiling: if the SOQL contains its own LIMIT, the smaller of the two wins, so a LIMIT in the query can tighten this but never raise it. The response reports appliedLimit, limitSource and truncated."),
 }).strict();
 
 export const CreateRecordSchema = z.object({

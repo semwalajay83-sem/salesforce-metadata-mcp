@@ -168,6 +168,31 @@ Gotcha for future edits: `registerTool`'s `inputSchema` is a **built ZodObject**
 but a **raw shape** for the inline meta-tools. Anything reading schemas must normalise both — the
 first cut of `sf_call_tool` assumed raw shapes and silently rejected every argument object.
 
+## Inert parameters — check the branch, not just the schema (v3.1.1, 2026-09-09)
+`sf_query_records`' `limit` did nothing for the entire life of the package (since `f808b50`, v2.6.5).
+`queryRecords` interpolated it **only** into the SOQL it builds from `objectApiName`/`fields`; every
+real call passes `query`, which takes the other branch of the same `??` chain. A documented default
+of 200 that never applied, failing silently and open.
+
+- **A declared parameter is not an applied one.** When a service function has a "build it" and a
+  "take it as given" branch, check the guardrail is on both. Audited the siblings at the same time:
+  `listObjects` and `searchRecords` do apply theirs, so this was the only one.
+- **Applying a cap without reporting it is the same bug in new clothes.** The response now carries
+  `appliedLimit`/`limitSource`/`truncated`, and truncation is a fact — one row past the cap is
+  fetched to tell "exactly N" from "more than N", then dropped. Precedence is
+  `min(param, LIMIT in query)`: the query can tighten the guardrail, never raise it.
+- `qa-query-limit.mjs` (17 checks) pins all of it, including COUNT()/OFFSET/FOR UPDATE not being
+  rewritten into invalid SOQL. Run it after touching `queryRecords` or `createClient`.
+
+Also fixed: `sf_find_tool` required **every** query token to appear in a tool name, so any
+natural-language phrase returned `matches: []` (from v3.0.0's `479a40d`). Now scored, not filtered,
+and it searches **titles and descriptions** as well as names — "run some apex code" cannot be
+resolved from names alone. Guards: 25 matches max, auto-load at most 3 toolsets from the top band,
+or a loose phrase would load half the server and undo lazy toolsets. Covered in `qa-toolsets.mjs`.
+
+Third: API errors were cut at a flat 300 chars, and **Salesforce puts the actionable part last** —
+`clipApiError` now keeps head + tail.
+
 ## Known Bugs Pending Fix
 None currently. The list below was retired 2026-07-30 after none of it reproduced against a live
 org (`demo-org`) via the full 33-scenario `qa-flow-test.mjs` suite — 30/30 real scenarios passed

@@ -183,6 +183,36 @@ async function main() {
   const after = await c.list();
   check("sf_create_flow now listed", after.map((t) => t.name).includes("sf_create_flow"));
 
+  // Reported 2026-09-09: sf_find_tool required EVERY token to appear in a tool name, so any
+  // natural-language phrase returned matches: [] — which reads as "no such tool exists" at exactly
+  // the moment someone is describing a capability in words. The "create flow" case above hid it,
+  // because that phrase happens to be a literal substring of sf_create_flow.
+  const phrases = [
+    ["create records anonymous apex", "sf_execute_anonymous_apex"],
+    ["run some apex code in the org", "sf_execute_anonymous_apex"],
+    ["give a user access to a field", "sf_create_field_level_security"],
+    ["bulk load a csv of contacts", "sf_bulk_insert_records"],
+  ];
+  for (const [phrase, expected] of phrases) {
+    const r = json((await c.call("sf_find_tool", { query: phrase, autoLoad: false })).text);
+    const names = (r.matches || []).map((m) => m.tool);
+    check(`sf_find_tool("${phrase}") returns matches`, names.length > 0, JSON.stringify(r.message || "").slice(0, 90));
+    check(`  ...and includes ${expected}`, names.includes(expected), `top: ${names.slice(0, 5).join(", ")}`);
+  }
+
+  // Ranking must put the exact name first, not merely somewhere in the list.
+  const exact = json((await c.call("sf_find_tool", { query: "sf_describe_object", autoLoad: false })).text);
+  check("an exact tool name ranks first", (exact.matches || [])[0]?.tool === "sf_describe_object", JSON.stringify((exact.matches || [])[0]));
+
+  // OR-matching must not turn one search into a mass toolset load — that would spend exactly the
+  // context lazy toolsets exist to save.
+  const beforeLoad = (await c.list()).length;
+  const broad = json((await c.call("sf_find_tool", { query: "create update delete record object field user" })).text);
+  check("a broad query is capped, not unbounded", (broad.matches || []).length <= 25, `${(broad.matches || []).length} shown`);
+  check("a broad query auto-loads at most 3 toolsets", (broad.loadedToolsets || []).length <= 3, JSON.stringify(broad.loadedToolsets));
+  const afterLoad = (await c.list()).length;
+  check("a broad query does not balloon the tool list", afterLoad - beforeLoad < 120, `${beforeLoad} -> ${afterLoad}`);
+
   // ── D. The newly-loaded tool actually deploys to the org ───────────────────
   section("D. LOADED TOOL DEPLOYS FOR REAL");
   const created = await c.call("sf_create_flow", {
