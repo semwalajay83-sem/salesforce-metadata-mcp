@@ -48,8 +48,11 @@ console.log(`\ntotals: ${JSON.stringify(counts)}  of ${report.results.length}`);
 
 // Re-judge with the current signal lists, so a report captured under older rules can be read
 // honestly without re-running the whole sweep (~50 min against a real org).
-const LIMIT = [/reached (the )?maximum/i, /exceeded the maximum/i, /License Limit Exceeded/i, /limit exceeded/i, /already in use by another/i];
-const UNAVAIL = [/not available (for \w+ )?for this organization/i, /not (available|enabled|supported) in (this|your) org/i, /is not enabled/i, /not licensed/i, /is not a valid metadata type for reading/i, /INVALID_TYPE/i, /Dev ?Hub/i, /OmniStudio|Vlocity|DevOps Center|Salesforce CPQ/i];
+const LIMIT = [/reached (the )?maximum/i,
+  /reached the limit of/i, /exceeded the maximum/i, /License Limit Exceeded/i, /limit exceeded/i, /already in use by another/i];
+const UNAVAIL = [/not available (for \w+ )?for this organization/i, /not (available|enabled|supported) in (this|your) org/i, /is not enabled/i, /not licensed/i, /is not a valid metadata type for reading/i,
+  /Unable to determine type mapping for type/i,
+  /Type is illegal here/i, /INVALID_TYPE/i, /Dev ?Hub/i, /OmniStudio|Vlocity|DevOps Center|Salesforce CPQ/i];
 let nLimit = 0, nUnavail = 0;
 const realList = [];
 for (const b of bugs) {

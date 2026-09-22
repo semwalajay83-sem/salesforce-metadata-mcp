@@ -81,6 +81,8 @@ const UNAVAIL_SIGNALS = [
   // whole licensed-feature cluster was being scored as bugs.
   /not available (for \w+ )?for this organization/i,
   /is not a valid metadata type for reading/i,
+  /Unable to determine type mapping for type/i,
+  /Type is illegal here/i,
   /is not enabled/i,
   /requires? (the |a )?(.*)(licen[cs]e|permission|feature|package)/i,
   /not licensed/i,
@@ -102,6 +104,7 @@ const OPAQUE_SIGNALS = [
  */
 const LIMIT_SIGNALS = [
   /reached (the )?maximum/i,
+  /reached the limit of/i,
   /exceeded the maximum/i,
   /License Limit Exceeded/i,
   /limit exceeded/i,
