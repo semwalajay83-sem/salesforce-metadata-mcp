@@ -34,12 +34,16 @@ import spawnSyncSafe from "cross-spawn";
  * is both sufficient and precise.
  */
 const SF_CLI_ARG_UNSAFE = /["\n\r]/;
-function runSfCli(args: string[], timeoutMs: number): { status: number | null; stdout: string; stderr: string; error?: Error } {
+function runSfCli(args: string[], timeoutMs: number, cwd?: string): { status: number | null; stdout: string; stderr: string; error?: Error } {
   const bad = args.find(a => SF_CLI_ARG_UNSAFE.test(a));
   if (bad !== undefined) {
     return { status: null, stdout: "", stderr: "", error: new Error(`Argument rejected: contains a double-quote or newline character, which is never valid in an sf CLI value: ${JSON.stringify(bad)}`) };
   }
-  const res = spawnSyncSafe.sync("sf", args, { encoding: "utf-8", timeout: timeoutMs, env: { PATH: process.env["PATH"] ?? "" } });
+  // Some sf commands (package create, package version create, org create scratch) only run inside a
+  // Salesforce project. With no cwd the CLI inherits wherever the MCP client happened to launch this
+  // server, which is never a project, so those commands always failed with RequiresProjectError.
+  // Added 2026-09-22.
+  const res = spawnSyncSafe.sync("sf", args, { encoding: "utf-8", timeout: timeoutMs, cwd, env: { PATH: process.env["PATH"] ?? "" } });
   return { status: res.status, stdout: res.stdout ?? "", stderr: res.stderr ?? "", error: res.error };
 }
 import { readFileSync, mkdtempSync, writeFileSync, rmSync, existsSync } from "fs";
@@ -7561,8 +7565,8 @@ export async function createNotificationType(auth: SalesforceAuth, params: Recor
  * output even on error) — `err.message` only contains a generic "Command failed: ..." wrapper, so
  * that stdout must be parsed first or the real Salesforce error reason is lost.
  */
-function execSfCli(args: string[], timeoutMs: number): { success: true; result: Record<string, unknown> } | { success: false; message: string } {
-    const res = runSfCli(args, timeoutMs);
+function execSfCli(args: string[], timeoutMs: number, cwd?: string): { success: true; result: Record<string, unknown> } | { success: false; message: string } {
+    const res = runSfCli(args, timeoutMs, cwd);
     if (res.status === 0) {
         try {
             const parsed = JSON.parse(res.stdout) as { result?: Record<string, unknown> };
@@ -7571,11 +7575,47 @@ function execSfCli(args: string[], timeoutMs: number): { success: true; result: 
     }
     if (res.stdout) {
         try {
-            const parsed = JSON.parse(res.stdout) as { message?: string };
-            if (parsed.message) return { success: false, message: sanitizeError(parsed.message) };
+            // The CLI's JSON carries an `action` alongside `message`, and it is usually the only
+            // part that tells you what to DO — "Packaging is not enabled on this org", "Run sf org
+            // login", and so on. It was being thrown away, leaving bare text like "The requested
+            // resource does not exist". Keep both. Fixed 2026-09-22.
+            const parsed = JSON.parse(res.stdout) as { message?: string; action?: string; cause?: unknown; stack?: string };
+            if (parsed.message) {
+                // Newer CLI versions bury the guidance inside `cause`/`stack` rather than exposing a
+                // top-level `action`, e.g. action: 'Packaging is not enabled on this org.' Dig it out
+                // — it is the only part that says what to do.
+                const buried = `${typeof parsed.cause === "string" ? parsed.cause : ""}
+${parsed.stack ?? ""}`
+                    .match(/action:\s*'([^']+)'/)?.[1];
+                const action = parsed.action ?? buried;
+                return { success: false, message: `${sanitizeError(parsed.message)}${action ? ` ${sanitizeError(action)}` : ""}` };
+            }
         } catch { /* stdout wasn't valid JSON — fall through to the generic message below */ }
     }
-    return { success: false, message: sanitizeError(res.error ? res.error.message : (res.stderr || "SF CLI execution failed.")) };
+    const raw = res.error ? res.error.message : (res.stderr || res.stdout || "SF CLI execution failed.");
+    // "RequiresProjectError" tells the caller nothing about what to do. Name the parameter.
+    if (/RequiresProject/i.test(raw) || /required to run from within a salesforce project/i.test(raw)) {
+        return {
+            success: false,
+            message: `This command only runs inside a Salesforce project (a folder containing sfdx-project.json), and none was given. Pass projectDirectory with the path to your project. ${cwd ? `Tried: ${cwd}.` : "No directory was supplied, so the CLI ran wherever this server was started."}`,
+        };
+    }
+    return { success: false, message: sanitizeError(raw) };
+}
+
+/**
+ * Checks a caller-supplied project directory before the CLI is invoked, so the failure names the
+ * problem instead of surfacing RequiresProjectError from a directory that does not exist.
+ */
+function assertSfProject(dir: unknown): { ok: true; dir: string } | { ok: false; message: string } {
+    if (!dir || typeof dir !== "string") {
+        return { ok: false, message: "This command only runs inside a Salesforce project. Pass projectDirectory — the path to a folder containing sfdx-project.json." };
+    }
+    if (!existsSync(dir)) return { ok: false, message: `projectDirectory '${dir}' does not exist.` };
+    if (!existsSync(join(dir, "sfdx-project.json"))) {
+        return { ok: false, message: `'${dir}' is not a Salesforce project — it has no sfdx-project.json. Point projectDirectory at a project folder, or create one with 'sf project generate'.` };
+    }
+    return { ok: true, dir };
 }
 
 export async function createNewScratchOrg(_auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
@@ -7596,19 +7636,26 @@ export async function deleteScratchOrg(_auth: SalesforceAuth, params: Record<str
 }
 
 export async function createPackage(_auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
+    const project = assertSfProject(params.projectDirectory);
+    if (!project.ok) return { success: false, message: project.message };
     const args: string[] = ["package", "create", "--name", params.name, "--package-type", params.packageType, "--path", params.path, "--json"];
+    // Packaging is a Dev Hub operation, and the CLI will not guess one.
+    if (params.devHubAlias) args.push("--target-dev-hub", params.devHubAlias);
     if (params.description) args.push("--description", params.description);
     if (params.noNamespace) args.push("--no-namespace");
-    const outcome = execSfCli(args, 60_000);
+    const outcome = execSfCli(args, 60_000, project.dir);
     return outcome.success ? { success: true, ...outcome.result } : outcome;
 }
 
 export async function createPackageVersion(_auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
+    const project = assertSfProject(params.projectDirectory);
+    if (!project.ok) return { success: false, message: project.message };
     const args: string[] = ["package", "version", "create", "--package", params.packageId, "--json"];
+    if (params.devHubAlias) args.push("--target-dev-hub", params.devHubAlias);
     if (params.installationKey) args.push("--installation-key", params.installationKey);
     if (params.codeVersion) args.push("--version-number", params.codeVersion);
     if (params.wait) args.push("--wait", String(params.wait));
-    const outcome = execSfCli(args, 600_000);
+    const outcome = execSfCli(args, 600_000, project.dir);
     return outcome.success ? { success: true, ...outcome.result } : outcome;
 }
 

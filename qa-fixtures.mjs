@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 /**
  * Fixtures for the full-surface sweep. One entry per registered tool.
  *
@@ -465,8 +467,8 @@ export function buildFixtures(ctx) {
   });
   add(7, "sf_create_saml_sso_config", {
     args: () => ({ name: `QASaml${T}`, issuer: "https://example.com/idp",
-      identityProviderCertificate: "MIIBQA==", loginUrl: "https://example.com/login" }),
-    expectUnavailable: true,
+      identityProviderCertificate: readFileSync("qa-test-cert.b64", "utf8").trim(),
+      loginUrl: "https://example.com/login" }),
   });
   add(7, "sf_create_push_topic", {
     args: () => ({ topicName: `QAPt${T}`, query: "SELECT Id, Name FROM Account" }),

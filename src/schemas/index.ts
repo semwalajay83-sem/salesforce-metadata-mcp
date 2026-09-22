@@ -2811,12 +2811,16 @@ export const CreatePackageSchema = z.object({
   name: z.string().min(1).describe("Package name"),
   packageType: z.enum(["Managed","Unlocked"]).describe("Package type: Managed or Unlocked"),
   path: z.string().min(1).describe("Path to package source, e.g. 'force-app'"),
+  projectDirectory: z.string().optional().describe("Path to the Salesforce project (the folder holding sfdx-project.json). Required — the sf CLI only runs these commands inside a project."),
+  devHubAlias: z.string().optional().describe("Dev Hub org alias. Packaging is a Dev Hub operation and the CLI will not guess one; omit only if a default dev hub is configured."),
   description: z.string().optional().describe("Package description"),
   noNamespace: z.boolean().default(false).describe("Create without a namespace (Unlocked only)"),
 });
 
 export const CreatePackageVersionSchema = z.object({
   packageId: z.string().min(1).describe("Package ID (0Ho...) or package alias"),
+  projectDirectory: z.string().optional().describe("Path to the Salesforce project (the folder holding sfdx-project.json). Required — the sf CLI only runs these commands inside a project."),
+  devHubAlias: z.string().optional().describe("Dev Hub org alias. Packaging is a Dev Hub operation and the CLI will not guess one; omit only if a default dev hub is configured."),
   installationKey: z.string().optional().describe("Installation key for the package version"),
   codeVersion: z.string().optional().describe("Version number, e.g. '1.0.0.NEXT'"),
   wait: z.number().int().min(1).optional().describe("Minutes to wait for version creation"),
