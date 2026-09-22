@@ -3124,10 +3124,19 @@ export async function createSharingRule(auth: SalesforceAuth, params: Parameters
     .replace(/<(\/?)met:/g, "<$1")
     // fullName at the top of the document names the FILE, not a member of SharingRules
     .replace(/\s*<fullName>[^<]*<\/fullName>/, "");
-  const { buildGenericDeployZip, deployZip, pollDeployStatus } = await import("./deployment.js");
-  const zip = await buildGenericDeployZip([], API_VERSION, [
-    { type: "SharingRules", name: params.objectName, xml: componentXml },
-  ]);
+  // The FILE is sharingRules/<Object>.sharingRules, but the deployable TYPE is
+  // SharingCriteriaRule / SharingOwnerRule with a member of '<Object>.<Rule>'. Listing
+  // "SharingRules" in the manifest instead makes the deploy fail with "Not in package.xml", so the
+  // zip is assembled here rather than through buildGenericDeployZip's type-per-component mapping.
+  const { buildPackageXml, deployZip, pollDeployStatus } = await import("./deployment.js");
+  const { default: JSZip } = await import("jszip");
+  const zipper = new JSZip();
+  // The manifest names the CONTAINER (SharingRules, member = the object). Naming the individual
+  // rule type instead makes the deploy reject the file with "Not in package.xml".
+  zipper.file("package.xml", buildPackageXml(
+    [{ name: "SharingRules", members: [params.objectName] }], API_VERSION));
+  zipper.file(`sharingRules/${params.objectName}.sharingRules`, componentXml);
+  const zip = (await zipper.generateAsync({ type: "nodebuffer" })).toString("base64");
   const deployId = await deployZip(auth, zip, { checkOnly: false, rollbackOnError: true });
   const result = await pollDeployStatus(auth, deployId, 5 * 60 * 1000);
   if (result.success) return result;
