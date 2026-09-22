@@ -3074,6 +3074,7 @@ export const CreatePathAssistantSchema = z.object({
   pathName: z.string().min(1).max(80).regex(/^[A-Za-z][A-Za-z0-9_]*$/).describe("Path assistant API name"),
   label: z.string().min(1).max(255).describe("Display label"),
   isActive: z.boolean().default(true).describe("Whether the path is active"),
+  recordTypeName: z.string().optional().describe("Record type the path attaches to. Defaults to 'Master', which only applies to objects with no record types."),
   pathItems: z.array(z.object({
     picklistValue: z.string().min(1).describe("Picklist value this path item corresponds to"),
     infoTitle: z.string().optional().describe("Guidance title for this stage"),

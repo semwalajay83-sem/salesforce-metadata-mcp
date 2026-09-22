@@ -2521,7 +2521,7 @@ function buildSharingRuleXml(params: {
   return `<met:metadata xsi:type="met:SharingRules" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.objectName)}</met:fullName>
     <met:${ruleTag}>
-      <met:fullName>${x(params.ruleName)}</met:fullName>
+      <met:fullName>${x(params.objectName)}.${x(params.ruleName)}</met:fullName>
       <met:accessLevel>${x(params.accessLevel)}</met:accessLevel>
       ${accountSettingsXml}
       ${criteriaXml}
@@ -3113,7 +3113,23 @@ export async function createCspSetting(auth: SalesforceAuth, params: Parameters<
   return upsertMetadata(auth, buildCspTrustedSiteXml(params));
 }
 export async function createSharingRule(auth: SalesforceAuth, params: Parameters<typeof buildSharingRuleXml>[0]): Promise<ToolResult> {
-  const result = await upsertMetadata(auth, buildSharingRuleXml(params));
+  // SharingRules cannot be written through the CRUD upsertMetadata call: every shape of payload
+  // comes back as a bare 500 UNKNOWN_EXCEPTION, including a minimal criteria rule against a
+  // freshly created Private object (measured 2026-09-22 across several sharedTo forms). It deploys
+  // fine as a file, which is the machinery static resources and LWC already use, so build the
+  // component document and deploy it. Fixed 2026-09-22.
+  const componentXml = buildSharingRuleXml(params)
+    .replace(/^<met:metadata[^>]*>/, `<?xml version="1.0" encoding="UTF-8"?>\n<SharingRules xmlns="http://soap.sforce.com/2006/04/metadata">`)
+    .replace(/<\/met:metadata>$/, "</SharingRules>")
+    .replace(/<(\/?)met:/g, "<$1")
+    // fullName at the top of the document names the FILE, not a member of SharingRules
+    .replace(/\s*<fullName>[^<]*<\/fullName>/, "");
+  const { buildGenericDeployZip, deployZip, pollDeployStatus } = await import("./deployment.js");
+  const zip = await buildGenericDeployZip([], API_VERSION, [
+    { type: "SharingRules", name: params.objectName, xml: componentXml },
+  ]);
+  const deployId = await deployZip(auth, zip, { checkOnly: false, rollbackOnError: true });
+  const result = await pollDeployStatus(auth, deployId, 5 * 60 * 1000);
   if (result.success) return result;
   // A sharing rule only means something when the object's org-wide default RESTRICTS access — on a
   // Public Read/Write object there is nothing left to share, and Salesforce answers with a bare 500

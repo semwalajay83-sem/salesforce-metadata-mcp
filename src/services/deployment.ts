@@ -191,6 +191,7 @@ function inferMetadataPath(type: string, name: string): string {
     // package.xml, but was not found in zipped directory". Fixed 2026-09-22.
     case "CustomLabel":
     case "CustomLabels": return `labels/CustomLabels.labels`;
+    case "SharingRules": return `sharingRules/${name}.sharingRules`;
     case "AssignmentRules": return `assignmentRules/${name}.assignmentRules`;
     case "AutoResponseRules": return `autoResponseRules/${name}.autoResponseRules`;
     case "EscalationRules": return `escalationRules/${name}.escalationRules`;

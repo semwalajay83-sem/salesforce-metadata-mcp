@@ -79,7 +79,7 @@ const UNAVAIL_SIGNALS = [
   // Salesforce's actual wording for an absent feature licence — OmniStudio, Experience Cloud and
   // friends all answer with "for this organization", which the pattern above never matched, so a
   // whole licensed-feature cluster was being scored as bugs.
-  /not available for this organization/i,
+  /not available (for \w+ )?for this organization/i,
   /is not a valid metadata type for reading/i,
   /is not enabled/i,
   /requires? (the |a )?(.*)(licen[cs]e|permission|feature|package)/i,
