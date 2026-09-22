@@ -330,7 +330,7 @@ export function buildFixtures(ctx) {
     args: () => ({ pageName: `QAFp${T}`, label: `QA FP ${T}`, pageType: "AppPage", masterLabel: `QA FP ${T}` }),
     after: () => track("FlexiPage", `QAFp${T}`),
   });
-  add(4, "sf_create_tab", { args: () => ({ fullName: `QATab${T}`, label: `QA Tab ${T}`, sobjectName: OBJ, customObject: true }), after: () => track("CustomTab", `QATab${T}`) });
+  add(4, "sf_create_tab", { args: () => ({ fullName: OBJ, sobjectName: OBJ, customObject: true }), after: () => track("CustomTab", OBJ) });
   add(4, "sf_create_custom_tab", { args: () => ({ fullName: `QAWtab${T}`, label: `QA WTab ${T}`, url: "https://example.com" }), after: () => track("CustomTab", `QAWtab${T}`) });
 
   // ── PHASE 5 — security, users, admin. ──────────────────────────────────────────────────────
@@ -378,7 +378,7 @@ export function buildFixtures(ctx) {
     args: () => (ctx.recordIds.Account?.[0] ? { objectApiName: "Account", recordId: ctx.recordIds.Account[0] } : null),
     skipReason: "no account record yet",
   });
-  add(5, "sf_create_business_hours", { args: () => ({ name: `QA BH ${T}`, timeZone: "America/Los_Angeles", days: [{ day: "Mon", startTime: "08:00", endTime: "17:00", isActive: true }] }) });
+  add(5, "sf_create_business_hours", { args: () => ({ name: `QA_BH_${T}`, timeZone: "America/Los_Angeles", days: [{ day: "Mon", startTime: "08:00", endTime: "17:00", isActive: true }, { day: "Tue", startTime: "08:00", endTime: "17:00", isActive: true }] }) });
   add(5, "sf_create_holiday", { args: () => ({ name: `QA Hol ${T}`, activityDate: iso(new Date(now.getFullYear(), 11, 25)) }) });
   add(5, "sf_create_letterhead", { args: () => ({ fullName: `QALh${T}`, name: `QA LH ${T}` }), after: () => track("Letterhead", `QALh${T}`) });
   add(5, "sf_create_notification_type", { args: () => ({ fullName: `QANt${T}`, masterLabel: `QA NT ${T}`, customNotifTypeName: `QANt${T}` }) });

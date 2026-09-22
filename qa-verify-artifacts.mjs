@@ -51,7 +51,7 @@ const EXPECT = {
   sf_create_lightning_app:        ["CustomApplication", `QALapp${T}`],
   sf_create_custom_application:   ["CustomApplication", `QACapp${T}`],
   sf_create_flexipage:            ["FlexiPage", `QAFp${T}`],
-  sf_create_tab:                  ["CustomTab", `QATab${T}`],
+  sf_create_tab:                  ["CustomTab", OBJ],   // an object tab is named after its object
   sf_create_custom_tab:           ["CustomTab", `QAWtab${T}`],
   sf_create_permission_set:       ["PermissionSet", `QAPs${T}`],
   sf_create_custom_permission:    ["CustomPermission", `QACp${T}`],

@@ -2224,14 +2224,21 @@ function buildTabXml(params: {
   fullName: string; label?: string; motif: string;
   sobjectName?: string; customObject: boolean; url?: string; page?: string; description?: string;
 }): string {
+  // A tab on a custom object is identified BY that object: its fullName must be the object's API
+  // name, and Salesforce derives the label from the object rather than accepting one. sobjectName
+  // was declared but never used, so an object tab was deployed under an arbitrary name with no
+  // url/page either, and Salesforce could not tell what kind of tab it was ("Required fields are
+  // missing: [Type]"). Fixed 2026-09-22.
+  const isObjectTab = params.customObject === true;
+  const tabFullName = isObjectTab ? (params.sobjectName ?? params.fullName) : params.fullName;
   return `<met:metadata xsi:type="met:CustomTab" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <met:fullName>${x(params.fullName)}</met:fullName>
-    <met:motif>${x(params.motif || "Custom53: Bell")}</met:motif>
+    <met:fullName>${x(tabFullName)}</met:fullName>
     <met:customObject>${xmlBool(params.customObject)}</met:customObject>
-    ${params.label ? `<met:label>${x(params.label)}</met:label>` : ""}
-    ${params.url ? `<met:url>${x(params.url)}</met:url>` : ""}
-    ${params.page ? `<met:page>${x(params.page)}</met:page>` : ""}
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+    ${!isObjectTab && params.label ? `<met:label>${x(params.label)}</met:label>` : ""}
+    <met:motif>${x(params.motif || "Custom53: Bell")}</met:motif>
+    ${params.page ? `<met:page>${x(params.page)}</met:page>` : ""}
+    ${params.url ? `<met:url>${x(params.url)}</met:url>` : ""}
   </met:metadata>`;
 }
 
@@ -2965,6 +2972,21 @@ export async function createLightningApp(auth: SalesforceAuth, params: Parameter
   return upsertMetadata(auth, buildLightningAppXml(params));
 }
 export async function createTab(auth: SalesforceAuth, params: Parameters<typeof buildTabXml>[0]): Promise<ToolResult> {
+  // A tab is one of three kinds and Salesforce needs to know which: an object tab, a web tab (url)
+  // or a Visualforce tab (page). Without one it answers "Required fields are missing: [Type]",
+  // which does not tell the caller what to supply.
+  if (!params.customObject && !params.url && !params.page) {
+    return {
+      success: false,
+      message: "A tab needs to be one of: an object tab (customObject: true plus sobjectName), a web tab (url), or a Visualforce tab (page). None was given.",
+    } as ToolResult;
+  }
+  if (params.customObject && !params.sobjectName && !/__c$/i.test(params.fullName)) {
+    return {
+      success: false,
+      message: `An object tab is identified by its object, so sobjectName is required (or pass the object's API name as fullName). Got fullName '${params.fullName}'.`,
+    } as ToolResult;
+  }
   return upsertMetadata(auth, buildTabXml(params));
 }
 export async function createCompactLayout(auth: SalesforceAuth, params: Parameters<typeof buildCompactLayoutXml>[0]): Promise<ToolResult> {
@@ -8396,22 +8418,67 @@ export async function createKnowledgeArticleType(auth: SalesforceAuth, params: R
 
 export async function createBusinessHours(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
-        const dayMap: Record<string, string> = { Mon: "Monday", Tue: "Tuesday", Wed: "Wednesday", Thu: "Thursday", Fri: "Friday", Sat: "Saturday", Sun: "Sunday" };
-        const daysXml = (params.days as Array<Record<string, any>>).map(d => `
-    <met:businessHoursEntry>
-        <met:day>${dayMap[String(d.day)] ?? String(d.day)}</met:day>
-        <met:active>${d.isActive}</met:active>
-        <met:startTime>${x(String(d.startTime))}:00.000Z</met:startTime>
-        <met:endTime>${x(String(d.endTime))}:00.000Z</met:endTime>
-    </met:businessHoursEntry>`).join("\n");
+        // A BusinessHoursEntry has no <businessHoursEntry>/<day> children — the opening and closing
+        // times are FLAT per-day elements (mondayStartTime, mondayEndTime, ...), the entry is keyed
+        // by <fullName> not <name>, and the zone element is <timeZoneId> not <timeZoneSidKey>. The
+        // old shape was rejected outright with a 500. Elements follow the XSD sequence, which is
+        // alphabetical, so timeZoneId sits between thursdayStartTime and tuesdayEndTime.
+        // Fixed 2026-09-22.
+        const DAY_KEYS: Record<string, string> = {
+            Mon: "monday", Tue: "tuesday", Wed: "wednesday", Thu: "thursday",
+            Fri: "friday", Sat: "saturday", Sun: "sunday",
+            Monday: "monday", Tuesday: "tuesday", Wednesday: "wednesday", Thursday: "thursday",
+            Friday: "friday", Saturday: "saturday", Sunday: "sunday",
+        };
+        // Salesforce wants a full time-of-day: "08:00" -> "08:00:00.000Z".
+        const asTime = (v: unknown): string => {
+            const t = String(v ?? "").trim();
+            if (/^\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(t)) return t;
+            if (/^\d{2}:\d{2}:\d{2}$/.test(t)) return `${t}.000Z`;
+            if (/^\d{2}:\d{2}$/.test(t)) return `${t}:00.000Z`;
+            return t;
+        };
+        const times: Record<string, string> = {};
+        for (const d of (params.days ?? []) as Array<Record<string, any>>) {
+            const key = DAY_KEYS[String(d.day)] ?? String(d.day).toLowerCase();
+            if (d.startTime) times[`${key}StartTime`] = asTime(d.startTime);
+            if (d.endTime) times[`${key}EndTime`] = asTime(d.endTime);
+        }
+        // an API name cannot carry spaces; fall back to a cleaned-up version of the display name
+        const entryName = String(params.fullName ?? params.name).replace(/[^A-Za-z0-9_]/g, "_");
+        // <name> is the display name and is mandatory alongside <fullName>. Everything below
+        // fullName/active/default is emitted in one alphabetically sorted pass, because the
+        // BusinessHoursEntry XSD sequence is alphabetical and name/timeZoneId interleave with the
+        // per-day times (name after mondayStartTime, timeZoneId after thursdayStartTime).
+        times["name"] = String(params.name ?? entryName);
+        times["timeZoneId"] = String(params.timeZone ?? "");
+        const parts: string[] = Object.keys(times).sort()
+            .map((k) => `        <met:${k}>${x(times[k])}</met:${k}>`);
+
+        // BusinessHoursSettings is a SETTINGS component: its fullName is always "BusinessHours" and
+        // an upsert replaces the whole thing. Writing just the new entry would therefore delete every
+        // other set of business hours in the org, including the default one — Salesforce refused it
+        // ("Must have at least one default business hours"), which is the only reason nothing was
+        // lost. Read what is there, drop only the entry being replaced, and write the rest back.
+        // Sixth instance of the upsert-replaces-component pattern. Fixed 2026-09-22.
+        const existing = await readMetadataItem(auth, "BusinessHoursSettings", "BusinessHours");
+        if (!existing.success) {
+            return { success: false, message: `Could not read the org's existing business hours, and writing without them would discard every other set. ${existing.message ?? ""}`.trim() };
+        }
+        const records = String(existing.rawXml ?? "").match(/<records[^>]*>([\s\S]*?)<\/records>/i)?.[1] ?? "";
+        const preserved = (records.match(/<businessHours>[\s\S]*?<\/businessHours>/gi) ?? [])
+            .filter((blk) => !new RegExp(`<fullName>${entryName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}</fullName>`, "i").test(blk))
+            .map((blk) => blk.replace(/<(\/?)(\w+)>/g, "<$1met:$2>"))
+            .join("\n    ");
+
         const xml = `<met:metadata xsi:type="met:BusinessHoursSettings" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>BusinessHours</met:fullName>
+    ${preserved}
     <met:businessHours>
-        <met:name>${x(params.name)}</met:name>
+        <met:fullName>${x(entryName)}</met:fullName>
         <met:active>${params.isActive ?? true}</met:active>
         <met:default>${params.isDefault ?? false}</met:default>
-        <met:timeZoneSidKey>${x(params.timeZone)}</met:timeZoneSidKey>
-        ${daysXml}
+${parts.join("\n")}
     </met:businessHours>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
