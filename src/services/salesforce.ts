@@ -2812,6 +2812,39 @@ export async function upsertMetadata(auth: SalesforceAuth, metadataXml: string):
   }
 }
 
+/**
+ * Salesforce LIES about container-rule upserts.
+ *
+ * Upserting an AssignmentRules / AutoResponseRules / EscalationRules container returns
+ * success=false with UNKNOWN_EXCEPTION "unexpected metadata" — and then creates the rule anyway.
+ * Measured 2026-09-22: two rules written this way both came back as failures, and both were present
+ * in the org afterwards. Reporting that failure faithfully tells the caller their rule was not
+ * created when it was, so they retry or give up on work that already landed.
+ *
+ * So when that specific error comes back, ask the org who is right. Anything else is passed through
+ * untouched — this only second-guesses the one error Salesforce is known to be wrong about.
+ */
+async function upsertContainerRule(
+    auth: SalesforceAuth,
+    xml: string,
+    opts: { type: string; containerName: string; ruleName: string }
+): Promise<ToolResult> {
+    const result = await upsertMetadata(auth, xml);
+    if (result.success) return result;
+    if (!/unexpected metadata|UNKNOWN_EXCEPTION/i.test(String(result.message ?? ""))) return result;
+
+    const back = await readMetadataItem(auth, opts.type, opts.containerName);
+    if (back.success && new RegExp(`<fullName>${opts.ruleName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}</fullName>`, "i").test(String(back.rawXml))) {
+        return {
+            success: true,
+            fullName: `${opts.containerName}.${opts.ruleName}`,
+            created: true,
+            message: `Created '${opts.ruleName}' on ${opts.containerName}. (Salesforce reported "${String(result.message).slice(0, 60)}" for this container type, but the rule is present in the org — verified by reading it back.)`,
+        } as ToolResult;
+    }
+    return result;
+}
+
 // ─── Exported service functions ───────────────────────────────────────────────
 
 export async function createCustomObject(auth: SalesforceAuth, meta: CustomObjectMetadata): Promise<ToolResult> {
@@ -2932,10 +2965,14 @@ export async function createEmailAlert(auth: SalesforceAuth, params: Parameters<
   return upsertMetadata(auth, buildEmailAlertXml(params));
 }
 export async function createAssignmentRule(auth: SalesforceAuth, params: Parameters<typeof buildAssignmentRuleXml>[0]): Promise<ToolResult> {
-  return upsertMetadata(auth, buildAssignmentRuleXml(params));
+  return upsertContainerRule(auth, buildAssignmentRuleXml(params), {
+    type: "AssignmentRules", containerName: params.objectName, ruleName: params.ruleName,
+  });
 }
 export async function createAutoResponseRule(auth: SalesforceAuth, params: Parameters<typeof buildAutoResponseRuleXml>[0]): Promise<ToolResult> {
-  return upsertMetadata(auth, buildAutoResponseRuleXml(params));
+  return upsertContainerRule(auth, buildAutoResponseRuleXml(params), {
+    type: "AutoResponseRules", containerName: params.objectName, ruleName: params.ruleName,
+  });
 }
 export async function createMatchingRule(auth: SalesforceAuth, params: Parameters<typeof buildMatchingRuleXml>[0]): Promise<ToolResult> {
   return upsertMetadata(auth, buildMatchingRuleXml(params));
@@ -5396,10 +5433,23 @@ export async function createEmbeddedService(auth: SalesforceAuth, params: Record
         // EmbeddedServiceConfig WSDL elements include deploymentType, embeddedServiceMessagingChannel,
         // fullName, isEnabled, masterLabel and site. There is no embeddedServiceType, and no
         // embeddedServiceLiveAgent / embeddedServiceMessaging child elements on this type.
+        // deploymentFeature is mandatory ("Required field is missing: deploymentFeature") and was
+        // never emitted — the element list in the comment above is incomplete. It also took fullName
+        // from deploymentName, which the schema leaves OPTIONAL, so omitting it produced an empty
+        // fullName. Derive both. Fixed 2026-09-22.
+        const deploymentFeature = params.deploymentFeature
+            ?? (isLiveAgent ? "LiveAgent" : "MessagingChannel");
+        const deploymentName = params.deploymentName
+            ?? params.serviceName
+            ?? String(params.label ?? "").replace(/[^A-Za-z0-9_]/g, "_");
+        if (!deploymentName) {
+            return { success: false, message: "An embedded service deployment needs an API name — pass deploymentName (or a label that can be turned into one)." };
+        }
         const xml = `<met:metadata xsi:type="met:EmbeddedServiceConfig" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <met:deploymentFeature>${x(deploymentFeature)}</met:deploymentFeature>
     <met:deploymentType>${x(params.deploymentType || "Web")}</met:deploymentType>
     ${!isLiveAgent && params.messagingChannelName ? `<met:embeddedServiceMessagingChannel>${x(params.messagingChannelName)}</met:embeddedServiceMessagingChannel>` : ""}
-    <met:fullName>${x(params.deploymentName)}</met:fullName>
+    <met:fullName>${x(deploymentName)}</met:fullName>
     <met:isEnabled>true</met:isEnabled>
     <met:masterLabel>${x(params.label)}</met:masterLabel>
     <met:site>${x(params.site)}</met:site>
@@ -7012,8 +7062,13 @@ export async function createCustomWebTab(auth: SalesforceAuth, params: Record<st
 
 export async function createScheduledFlow(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
-        const paths = (params.scheduledPaths ?? []).map((p: Record<string, any>) => `
+        // A scheduled path is a flow element, so it needs an API <name> as well as a display label —
+        // without it Salesforce answers "Required field is missing: name". The schema only collects a
+        // label, so derive the name from it. XSD sequence: name, connector, label, offsetNumber,
+        // offsetUnit, timeSource. Fixed 2026-09-22.
+        const paths = (params.scheduledPaths ?? []).map((p: Record<string, any>, i: number) => `
     <met:scheduledPaths>
+        <met:name>${x(String(p.name ?? p.label ?? `path${i + 1}`).replace(/[^A-Za-z0-9_]/g, "_"))}</met:name>
         <met:label>${x(p.label)}</met:label>
         <met:offsetNumber>${p.offsetNumber}</met:offsetNumber>
         <met:offsetUnit>${x(p.offsetUnit)}</met:offsetUnit>
@@ -8341,14 +8396,20 @@ export async function createPathAssistant(auth: SalesforceAuth, params: Record<s
         ${keyFieldsXml}
     </met:pathAssistantSteps>`;
         }).join("\n");
-        const fullName = `${params.objectName}.${params.fieldName}.${params.pathName}`;
+        // PathAssistant is named by the path alone, not Object.Field.Path. Its display name is
+        // <masterLabel> — <label> is not a member of the type ("Element ...label invalid at this
+        // location in type PathAssistant") — and the flag is <active>, not <isActive>. XSD sequence:
+        // active, entityName, fieldName, masterLabel, pathAssistantSteps, recordTypeName.
+        // Fixed 2026-09-22.
+        const fullName = String(params.pathName);
         const xml = `<met:metadata xsi:type="met:PathAssistant" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(fullName)}</met:fullName>
-    <met:label>${x(params.label)}</met:label>
-    <met:isActive>${params.isActive ?? true}</met:isActive>
+    <met:active>${params.isActive ?? true}</met:active>
     <met:entityName>${x(params.objectName)}</met:entityName>
     <met:fieldName>${x(params.fieldName)}</met:fieldName>
+    <met:masterLabel>${x(params.label)}</met:masterLabel>
     ${pathItemsXml}
+    ${params.recordTypeName ? `<met:recordTypeName>${x(params.recordTypeName)}</met:recordTypeName>` : ""}
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {

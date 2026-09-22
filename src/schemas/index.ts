@@ -1991,7 +1991,12 @@ export const CreateMessagingChannelSchema = z.object({
 export const CreateChatButtonSchema = z.object({
   buttonName: z.string().min(1).max(80).describe("API name / DeveloperName of the chat button"),
   label: z.string().min(1).max(255),
-  routingType: z.enum(["Queue","Bot"]).default("Queue"),
+  // The API enum is LiveChatButtonRoutingType: Choice | LeastActive | MostAvailable | Omni.
+  // This offered "Queue" and "Bot" and defaulted to "Queue", so EVERY call was rejected with
+  // "'Queue' is not a valid value for the enum 'LiveChatButtonRoutingType'". Neither value ever
+  // reached the API successfully, so nothing can depend on them. Fixed 2026-09-22.
+  routingType: z.enum(["Choice","LeastActive","MostAvailable","Omni"]).default("Choice")
+    .describe("How chats are routed. Omni uses Omni-Channel routing; Choice offers the chat to the button's agents."),
   queueName: z.string().optional().describe("Queue DeveloperName for queue-based routing"),
   botName: z.string().optional().describe("Bot name for bot-first routing"),
   windowLanguage: z.string().default("en").describe("Chat window language code, e.g. 'en', 'fr', 'de'"),
@@ -2006,6 +2011,7 @@ export const CreateEmbeddedServiceSchema = z.object({
   serviceName: z.string().optional().describe("Alias for deploymentName"),
   label: z.string().min(1).max(255),
   site: z.string().min(1).describe("Experience Cloud site name or 'none' for non-community deployment"),
+  deploymentFeature: z.string().optional().describe("Deployment feature, e.g. 'LiveAgent' or 'MessagingChannel'. Required by Salesforce; derived from channelType when omitted."),
   channelType: z.enum(["LiveAgent","MessagingChannel","EmbeddedMessaging"]).default("LiveAgent"),
   chatButtonName: z.string().optional().describe("LiveChatButton API name (for LiveAgent)"),
   messagingChannelName: z.string().optional().describe("MessagingChannel API name (for MessagingChannel)"),
