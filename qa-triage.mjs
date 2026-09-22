@@ -45,3 +45,21 @@ for (const [k, list] of Object.entries(groups)) {
 
 const counts = report.results.reduce((a, r) => ((a[r.verdict] = (a[r.verdict] ?? 0) + 1), a), {});
 console.log(`\ntotals: ${JSON.stringify(counts)}  of ${report.results.length}`);
+
+// Re-judge with the current signal lists, so a report captured under older rules can be read
+// honestly without re-running the whole sweep (~50 min against a real org).
+const LIMIT = [/reached (the )?maximum/i, /exceeded the maximum/i, /License Limit Exceeded/i, /limit exceeded/i, /already in use by another/i];
+const UNAVAIL = [/not available for this organization/i, /not (available|enabled|supported) in (this|your) org/i, /is not enabled/i, /not licensed/i, /is not a valid metadata type for reading/i, /INVALID_TYPE/i, /Dev ?Hub/i, /OmniStudio|Vlocity|DevOps Center|Salesforce CPQ/i];
+let nLimit = 0, nUnavail = 0;
+const realList = [];
+for (const b of bugs) {
+  const d = clean(b.detail);
+  if (LIMIT.some((r) => r.test(d))) nLimit++;
+  else if (UNAVAIL.some((r) => r.test(d))) nUnavail++;
+  else realList.push(b.tool);
+}
+console.log(`\nof the ${bugs.length} BUGs, re-judged with current rules:`);
+console.log(`  org capacity / licence limits : ${nLimit}`);
+console.log(`  feature absent from this org  : ${nUnavail}`);
+console.log(`  genuinely worth chasing       : ${realList.length}`);
+console.log(`  -> ${realList.join(", ")}`);

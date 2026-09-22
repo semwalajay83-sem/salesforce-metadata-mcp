@@ -11,6 +11,8 @@
  *   PASS      tool succeeded (and, where a verifier exists, the org confirms the work landed)
  *   UNAVAIL   tool failed, but the org genuinely lacks the feature AND the error says so clearly.
  *             This is a legitimate outcome, not a bug — but only if the message is actionable.
+ *   LIMIT     the org is full, not the tool broken: platform-event cap, user licences, matching
+ *             rules, external data sources. A dev org accumulates these over years of QA runs.
  *   BUG       anything else: a crash, an opaque error, a schema rejection of valid input, a
  *             success that did not actually happen in the org, or an "unavailable" that was
  *             reported so badly a user could not act on it.
@@ -74,6 +76,11 @@ Object.assign(verifiersRef, verifiers);
 // A feature the org does not have is fine. An error the user cannot act on is not.
 const UNAVAIL_SIGNALS = [
   /not (available|enabled|supported) in (this|your) org/i,
+  // Salesforce's actual wording for an absent feature licence — OmniStudio, Experience Cloud and
+  // friends all answer with "for this organization", which the pattern above never matched, so a
+  // whole licensed-feature cluster was being scored as bugs.
+  /not available for this organization/i,
+  /is not a valid metadata type for reading/i,
   /is not enabled/i,
   /requires? (the |a )?(.*)(licen[cs]e|permission|feature|package)/i,
   /not licensed/i,
@@ -88,16 +95,31 @@ const OPAQUE_SIGNALS = [
   /^Unexpected token/i, /^fetch failed$/i, /^request to .* failed/i, /ECONNREFUSED/i,
   /is not a function/i, /TypeError/i, /^INVALID_SESSION_ID/i,
 ];
+/**
+ * The org being full is not the tool being broken. A Developer Edition org caps platform events at
+ * 5, matching rules, user licences and external data sources — and years of QA runs use them up.
+ * Scoring those as bugs buries the real ones.
+ */
+const LIMIT_SIGNALS = [
+  /reached (the )?maximum/i,
+  /exceeded the maximum/i,
+  /License Limit Exceeded/i,
+  /limit exceeded/i,
+  /already in use by another/i,
+  /storage limit/i,
+];
+
 function judge(err) {
   const e = String(err ?? "");
   if (OPAQUE_SIGNALS.some((r) => r.test(e.trim()))) return "BUG";
+  if (LIMIT_SIGNALS.some((r) => r.test(e))) return "LIMIT";
   if (UNAVAIL_SIGNALS.some((r) => r.test(e))) return "UNAVAIL";
   return "BUG";
 }
 
 function record(tool, verdict, detail, phase) {
   results.push({ tool, verdict, detail: String(detail ?? "").slice(0, 400), phase });
-  const tag = { PASS: "PASS ", UNAVAIL: "UNAV ", BUG: "BUG  ", SKIP: "SKIP " }[verdict];
+  const tag = { PASS: "PASS ", UNAVAIL: "UNAV ", LIMIT: "LIMIT", BUG: "BUG  ", SKIP: "SKIP " }[verdict];
   console.log(`  ${tag} ${tool}${detail ? ` — ${String(detail).slice(0, 150)}` : ""}`);
 }
 
@@ -148,7 +170,8 @@ for (const f of fixtures) {
   }
 
   if (!res.ok) {
-    const verdict = f.expectUnavailable ? (judge(res.error) === "BUG" ? "BUG" : "UNAVAIL") : judge(res.error);
+    const j = judge(res.error);
+    const verdict = f.expectUnavailable ? (j === "BUG" ? "BUG" : j) : j;
     record(f.tool, verdict, res.error, f.phase);
     continue;
   }
@@ -172,7 +195,7 @@ for (const f of fixtures) {
 // ─── report ──────────────────────────────────────────────────────────────────────────────────
 const by = (v) => results.filter((r) => r.verdict === v);
 console.log(`\n${"=".repeat(70)}`);
-console.log(`PASS ${by("PASS").length}   UNAVAIL ${by("UNAVAIL").length}   BUG ${by("BUG").length}   SKIP ${by("SKIP").length}   (of ${results.length})`);
+console.log(`PASS ${by("PASS").length}   UNAVAIL ${by("UNAVAIL").length}   LIMIT ${by("LIMIT").length}   BUG ${by("BUG").length}   SKIP ${by("SKIP").length}   (of ${results.length})`);
 if (by("BUG").length) {
   console.log(`\nBUGS:`);
   for (const b of by("BUG")) console.log(`  - ${b.tool}: ${b.detail}`);
