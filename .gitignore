@@ -35,3 +35,8 @@ Thumbs.db
 # Built MCPB bundle — a build artifact, not source. The manifest in mcpb/ is the source of truth,
 # and CI packs the bundle fresh on each tag. Committing the binary is how it goes stale.
 *.mcpb
+
+# QA sweep run artifacts
+qa-sweep-report.json
+qa-inventory.json
+qa-sweep-*.log
