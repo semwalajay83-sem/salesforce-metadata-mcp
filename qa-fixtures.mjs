@@ -227,6 +227,12 @@ export function buildFixtures(ctx) {
     args: () => ({ objectName: OBJ, fullName: `QAOm${T}`, name: `QA OM ${T}`,
       endpointUrl: "https://example.com/hook", fields: ["Id"] }),
   });
+  add(3, "sf_create_apex_class", {
+    args: () => ({ className: `QASched${T}`,
+      classBody: `public class QASched${T} implements Schedulable { public void execute(SchedulableContext sc) { System.debug('qa'); } }` }),
+    note: "schedulable class for the scheduled job below",
+    after: () => track("ApexClass", `QASched${T}`),
+  });
   add(3, "sf_create_scheduled_job", {
     args: () => ({ className: `QASched${T}`, jobName: `QA Sched ${T}`, cronExpression: "0 0 1 * * ?" }),
   });
@@ -448,7 +454,9 @@ export function buildFixtures(ctx) {
   });
   add(7, "sf_create_auth_provider", {
     args: () => ({ providerName: `QAAuth${T}`, friendlyName: `QA Auth ${T}`, providerType: "OpenIdConnect",
-      consumerKey: "qa-key", consumerSecret: "qa-secret" }),
+      consumerKey: "qa-key", consumerSecret: "qa-secret",
+      authorizeUrl: "https://example.com/authorize", tokenUrl: "https://example.com/token",
+      userInfoUrl: "https://example.com/userinfo" }),
     after: () => track("AuthProvider", `QAAuth${T}`),
   });
   add(7, "sf_create_saml_sso_config", {

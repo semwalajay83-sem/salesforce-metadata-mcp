@@ -8443,15 +8443,33 @@ export async function createHoliday(auth: SalesforceAuth, params: Record<string,
 
 export async function createAuthProvider(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
+        // OpenIdConnect and Custom providers have no built-in endpoints, so Salesforce requires
+        // authorizeUrl / tokenUrl / userInfoUrl — and there was no way to supply them, which made
+        // those two provider types impossible to create (the API answered the unhelpful "You must
+        // enter a value"). Named providers like Google or GitHub supply their own endpoints.
+        // Elements follow the AuthProvider XSD sequence, which is alphabetical. Fixed 2026-09-22.
+        const NEEDS_ENDPOINTS = ["OpenIdConnect", "Custom"];
+        if (NEEDS_ENDPOINTS.includes(String(params.providerType))) {
+            const missing = ["authorizeUrl", "tokenUrl", "userInfoUrl"].filter((k) => !params[k]);
+            if (missing.length) {
+                return {
+                    success: false,
+                    message: `A '${params.providerType}' auth provider needs its identity provider endpoints: ${missing.join(", ")}. Built-in provider types (Google, GitHub, Facebook, Salesforce) supply their own and do not need these.`,
+                };
+            }
+        }
         const xml = `<met:metadata xsi:type="met:AuthProvider" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.providerName)}</met:fullName>
-    <met:friendlyName>${x(params.friendlyName)}</met:friendlyName>
-    <met:providerType>${x(params.providerType)}</met:providerType>
+    ${params.authorizeUrl ? `<met:authorizeUrl>${x(params.authorizeUrl)}</met:authorizeUrl>` : ""}
     <met:consumerKey>${x(params.consumerKey)}</met:consumerKey>
     <met:consumerSecret>${x(params.consumerSecret)}</met:consumerSecret>
     ${params.defaultScopes ? `<met:defaultScopes>${x(params.defaultScopes)}</met:defaultScopes>` : ""}
     ${params.customErrorUrl ? `<met:errorUrl>${x(params.customErrorUrl)}</met:errorUrl>` : ""}
+    <met:friendlyName>${x(params.friendlyName)}</met:friendlyName>
+    <met:providerType>${x(params.providerType)}</met:providerType>
     ${params.registrationHandler ? `<met:registrationHandler>${x(params.registrationHandler)}</met:registrationHandler>` : ""}
+    ${params.tokenUrl ? `<met:tokenUrl>${x(params.tokenUrl)}</met:tokenUrl>` : ""}
+    ${params.userInfoUrl ? `<met:userInfoUrl>${x(params.userInfoUrl)}</met:userInfoUrl>` : ""}
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {

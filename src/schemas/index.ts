@@ -3122,6 +3122,9 @@ export const CreateAuthProviderSchema = z.object({
   consumerSecret: z.string().min(1).describe("Consumer secret / client secret"),
   defaultScopes: z.string().optional().describe("Default OAuth scopes"),
   customErrorUrl: z.string().optional().describe("Custom error URL"),
+  authorizeUrl: z.string().optional().describe("IdP authorization endpoint. Required for OpenIdConnect and Custom providers."),
+  tokenUrl: z.string().optional().describe("IdP token endpoint. Required for OpenIdConnect and Custom providers."),
+  userInfoUrl: z.string().optional().describe("IdP user-info endpoint. Required for OpenIdConnect and Custom providers."),
   registrationHandler: z.string().optional().describe("Apex class name for registration handler"),
 }).strict();
 

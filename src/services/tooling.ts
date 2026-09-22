@@ -224,11 +224,28 @@ export async function createScheduledJob(
   try {
     const apexCode = `System.schedule('${jobName.replace(/'/g, "\\'")}', '${cronExpression.replace(/'/g, "\\'")}', new ${className}());`;
     const client = createClient(auth);
-    const resp = await client.get<{ compiled: boolean; success: boolean; exceptionMessage?: string | null }>(
+    const resp = await client.get<{
+      compiled: boolean; success: boolean; exceptionMessage?: string | null;
+      compileProblem?: string | null; line?: number; column?: number;
+    }>(
       `/tooling/executeAnonymous?anonymousBody=${encodeURIComponent(apexCode)}`
     );
-    if (!resp.data.compiled || !resp.data.success) {
-      return { success: false, message: resp.data.exceptionMessage ?? "Failed to schedule job" };
+    // A compile failure reports compileProblem, not exceptionMessage. Only the latter was read, so
+    // every compile failure — a misspelled class, a class that is not Schedulable, one that does not
+    // exist — collapsed into the useless "Failed to schedule job". Say which it was.
+    // Fixed 2026-09-22.
+    if (!resp.data.compiled) {
+      const where = resp.data.line ? ` (line ${resp.data.line}, column ${resp.data.column ?? 0})` : "";
+      return {
+        success: false,
+        message: `Could not schedule '${jobName}': the Apex did not compile${where} — ${resp.data.compileProblem ?? "no compiler message returned"}. Check that class '${className}' exists and implements Schedulable.`,
+      };
+    }
+    if (!resp.data.success) {
+      return {
+        success: false,
+        message: `Could not schedule '${jobName}': ${resp.data.exceptionMessage ?? "the Apex ran but reported failure with no message"}. Check the cron expression '${cronExpression}' and that '${className}' implements Schedulable.`,
+      };
     }
     return {
       success: true, fullName: jobName, created: true,
