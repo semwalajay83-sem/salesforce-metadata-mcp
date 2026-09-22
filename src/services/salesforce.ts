@@ -8146,11 +8146,6 @@ export async function createQuickAction(auth: SalesforceAuth, params: Record<str
         if (params.actionType === "Create" && !params.targetObject) {
             params = { ...params, targetObject: params.objectName };
         }
-        const fieldsXml = (params.fields ?? []).map((f: Record<string, any>) => `
-    <met:quickActionLayoutItems>
-        <met:field>${x(String(f.name))}</met:field>
-        ${f.required ? "<met:required>true</met:required>" : ""}
-    </met:quickActionLayoutItems>`).join("\n");
         const xml = `<met:metadata xsi:type="met:QuickAction" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(fullName)}</met:fullName>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
