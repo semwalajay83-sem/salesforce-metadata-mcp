@@ -1871,22 +1871,29 @@ function buildWorkflowFieldUpdateXml(params: {
   field: string; literalValue?: string; formula?: string;
   nullValue?: boolean; notifyAssignee: boolean;
 }): string {
-  let operationXml = "";
+  // WorkflowFieldUpdate is an XSD sequence — element ORDER is enforced by the server:
+  //   fullName, description, field, formula, literalValue, lookupValue, lookupValueType,
+  //   name, notifyAssignee, operation, protected, reevaluateOnChange, targetObject
+  // It has no <label>: the API name is <fullName> and the display label is <name>.
+  let valueXml = "";
+  let operation = "Literal";
   if (params.nullValue) {
-    operationXml = `<met:operation>Null</met:operation>`;
+    operation = "Null";
   } else if (params.formula) {
-    operationXml = `<met:formula>${x(params.formula)}</met:formula><met:operation>Formula</met:operation>`;
+    valueXml = `<met:formula>${x(params.formula)}</met:formula>`;
+    operation = "Formula";
   } else {
-    operationXml = `<met:literalValue>${x(params.literalValue ?? "")}</met:literalValue><met:operation>Literal</met:operation>`;
+    valueXml = `<met:literalValue>${x(params.literalValue ?? "")}</met:literalValue>`;
   }
   return `<met:metadata xsi:type="met:Workflow" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.objectName)}</met:fullName>
     <met:fieldUpdates>
-      <met:name>${x(params.actionName)}</met:name>
-      <met:label>${x(params.label)}</met:label>
+      <met:fullName>${x(params.actionName)}</met:fullName>
       <met:field>${x(params.field)}</met:field>
-      ${operationXml}
+      ${valueXml}
+      <met:name>${x(params.label)}</met:name>
       <met:notifyAssignee>${params.notifyAssignee}</met:notifyAssignee>
+      <met:operation>${operation}</met:operation>
       <met:protected>false</met:protected>
     </met:fieldUpdates>
   </met:metadata>`;
@@ -2007,13 +2014,12 @@ function buildEmailAlertXml(params: {
     <met:fullName>${x(params.objectName)}</met:fullName>
     <met:alerts>
       <met:fullName>${x(params.alertName)}</met:fullName>
-      <met:label>${x(params.label)}</met:label>
-      <met:template>${x(params.template)}</met:template>
-      <met:senderType>${x(params.senderType)}</met:senderType>
-      ${params.senderAddress ? `<met:senderAddress>${x(params.senderAddress)}</met:senderAddress>` : ""}
-      ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+      <met:description>${x(params.description ?? params.label)}</met:description>
       <met:protected>${params.protected}</met:protected>
       ${recipientsXml}
+      ${params.senderAddress ? `<met:senderAddress>${x(params.senderAddress)}</met:senderAddress>` : ""}
+      <met:senderType>${x(params.senderType)}</met:senderType>
+      <met:template>${x(params.template)}</met:template>
     </met:alerts>
   </met:metadata>`;
 }
@@ -2253,16 +2259,18 @@ function buildListViewXml(params: {
   const sharedToXml = params.sharedTo ? `
     <met:sharedTo>
       <met:${params.sharedTo.type}>${params.sharedTo.name ? x(params.sharedTo.name) : ""}</met:${params.sharedTo.type}>
-    </met:sharedTo>` : `<met:sharedTo><met:allUsers>true</met:allUsers></met:sharedTo>`;
+    </met:sharedTo>` : `<met:sharedTo><met:allInternalUsers></met:allInternalUsers></met:sharedTo>`;
+  // ListView is an XSD sequence: fullName, booleanFilter, columns, division, filterScope,
+  // filters, label, language, queue, sharedTo. 'allUsers' is not a SharedTo member.
   return `<met:metadata xsi:type="met:CustomObject" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.objectName)}</met:fullName>
     <met:listViews>
       <met:fullName>${x(params.fullName)}</met:fullName>
-      <met:label>${x(params.label)}</met:label>
-      <met:filterScope>${x(params.filterScope)}</met:filterScope>
-      ${colsXml}
-      ${filtersXml}
       ${params.booleanFilter ? `<met:booleanFilter>${x(params.booleanFilter)}</met:booleanFilter>` : ""}
+      ${colsXml}
+      <met:filterScope>${x(params.filterScope)}</met:filterScope>
+      ${filtersXml}
+      <met:label>${x(params.label)}</met:label>
       ${sharedToXml}
     </met:listViews>
   </met:metadata>`;
@@ -2274,21 +2282,23 @@ function buildEmailTemplateXml(params: {
   relatedEntityType?: string; encoding: string; available: boolean;
   replyTo?: string; senderName?: string;
 }): string {
+  // EmailTemplate is an XSD sequence; the charset element is <encodingKey>, not <encoding>.
+  // Order: fullName, available, description, encodingKey, letterhead, name, relatedEntityType,
+  // replyTo, senderName, style, subject, textOnly, type, htmlValue.
   return `<met:metadata xsi:type="met:EmailTemplate" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.fullName)}</met:fullName>
-    <met:name>${x(params.name)}</met:name>
     <met:available>${params.available}</met:available>
-    <met:encoding>${x(params.encoding)}</met:encoding>
-    <met:label>${x(params.label)}</met:label>
+    ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+    <met:encodingKey>${x(params.encoding)}</met:encodingKey>
+    <met:name>${x(params.name)}</met:name>
+    ${params.relatedEntityType ? `<met:relatedEntityType>${x(params.relatedEntityType)}</met:relatedEntityType>` : ""}
+    ${params.replyTo ? `<met:replyTo>${x(params.replyTo)}</met:replyTo>` : ""}
+    ${params.senderName ? `<met:senderName>${x(params.senderName)}</met:senderName>` : ""}
     <met:style>none</met:style>
     <met:subject>${x(params.subject)}</met:subject>
     <met:textOnly>${x(params.body)}</met:textOnly>
+    <met:type>${x(params.type === "html" && !params.htmlValue ? "text" : params.type)}</met:type>
     ${params.htmlValue ? `<met:htmlValue>${x(params.htmlValue)}</met:htmlValue>` : ""}
-    <met:type>${x(params.type)}</met:type>
-    ${params.relatedEntityType ? `<met:relatedEntityType>${x(params.relatedEntityType)}</met:relatedEntityType>` : ""}
-    ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
-    ${params.replyTo ? `<met:replyTo>${x(params.replyTo)}</met:replyTo>` : ""}
-    ${params.senderName ? `<met:senderName>${x(params.senderName)}</met:senderName>` : ""}
   </met:metadata>`;
 }
 
@@ -2429,14 +2439,23 @@ function buildRemoteSiteSettingXml(params: {
 function buildCspTrustedSiteXml(params: {
   endpointUrl: string; cspDirectives: string[]; description?: string; isActive: boolean;
 }): string {
-  const name = params.endpointUrl.replace(/[^A-Za-z0-9]/g, "_").slice(0, 40);
-  const directivesXml = params.cspDirectives.map(d => `<met:cspDirectives>${x(d)}</met:cspDirectives>`).join("\n");
+  // Strip the scheme first: "https://x.com" -> "https___x_com" makes Salesforce read "https" as a
+  // namespace prefix and refuse the deploy. Also guarantee it starts with a letter.
+  const name = ("CSP_" + params.endpointUrl.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, "").replace(/[^A-Za-z0-9]/g, "_"))
+    .replace(/_+/g, "_").replace(/_$/, "").slice(0, 40);
+  // CspTrustedSite has no <cspDirectives>: each directive is its own isApplicableToXxxSrc flag.
+  const on = (d: string) => params.cspDirectives.some(v => v.toLowerCase().replace(/[^a-z]/g, "") === d);
   return `<met:metadata xsi:type="met:CspTrustedSite" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(name)}</met:fullName>
-    <met:endpointUrl>${x(params.endpointUrl)}</met:endpointUrl>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+    <met:endpointUrl>${x(params.endpointUrl)}</met:endpointUrl>
     <met:isActive>${params.isActive}</met:isActive>
-    ${directivesXml}
+    <met:isApplicableToConnectSrc>${on("connectsrc")}</met:isApplicableToConnectSrc>
+    <met:isApplicableToFontSrc>${on("fontsrc")}</met:isApplicableToFontSrc>
+    <met:isApplicableToFrameSrc>${on("framesrc")}</met:isApplicableToFrameSrc>
+    <met:isApplicableToImgSrc>${on("imgsrc")}</met:isApplicableToImgSrc>
+    <met:isApplicableToMediaSrc>${on("mediasrc")}</met:isApplicableToMediaSrc>
+    <met:isApplicableToStyleSrc>${on("stylesrc")}</met:isApplicableToStyleSrc>
   </met:metadata>`;
 }
 
@@ -2447,10 +2466,12 @@ function buildSharingRuleXml(params: {
   sharedFrom?: { type: string; name?: string };
 }): string {
   const criteriaXml = (params.criteriaItems ?? []).map(c => {
-    const fieldQualified = c.field.includes(".") ? c.field : `${params.objectName}.${c.field}`;
+    // criteriaItems.field is the BARE field name — Salesforce qualifies it with the rule's
+    // object itself, so passing 'Opportunity.Name' here becomes 'Opportunity.Opportunity.Name'.
+    const bareField = c.field.includes(".") ? c.field.split(".").pop()! : c.field;
     return `
     <met:criteriaItems>
-      <met:field>${x(fieldQualified)}</met:field>
+      <met:field>${x(bareField)}</met:field>
       <met:operation>${x(c.operation)}</met:operation>
       <met:value>${x(c.value)}</met:value>
     </met:criteriaItems>`;
@@ -2458,16 +2479,21 @@ function buildSharingRuleXml(params: {
   const sharedToXml = `<met:sharedTo><met:${x(params.sharedTo.type)}>${params.sharedTo.name ? x(params.sharedTo.name) : ""}</met:${x(params.sharedTo.type)}></met:sharedTo>`;
   const sharedFromXml = params.sharedFrom
     ? `<met:sharedFrom><met:${x(params.sharedFrom.type)}>${params.sharedFrom.name ? x(params.sharedFrom.name) : ""}</met:${x(params.sharedFrom.type)}></met:sharedFrom>` : "";
+  // accountSettings is a member of the RULE (SharingCriteriaRule / SharingOwnerRule), not of
+  // SharingRules — emitting it at the top level made every Account sharing rule fail with
+  // "Element accountSettings invalid at this location in type SharingRules".
   const accountSettingsXml = params.objectName === "Account"
-    ? `<met:accountSettings><met:accountOwnerAccess>Edit</met:accountOwnerAccess></met:accountSettings>` : "";
+    ? `<met:accountSettings><met:caseAccessLevel>None</met:caseAccessLevel><met:contactAccessLevel>None</met:contactAccessLevel><met:opportunityAccessLevel>None</met:opportunityAccessLevel></met:accountSettings>` : "";
   const ruleTag = params.ruleType === "criteria" ? "sharingCriteriaRules" : "sharingOwnerRules";
+  // Rule sequence: fullName, accessLevel, accountSettings, booleanFilter, criteriaItems,
+  // description, label, sharedTo (sharedFrom for owner rules).
   return `<met:metadata xsi:type="met:SharingRules" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    ${accountSettingsXml}
     <met:fullName>${x(params.objectName)}</met:fullName>
     <met:${ruleTag}>
-      <met:accessLevel>${x(params.accessLevel)}</met:accessLevel>
-      ${criteriaXml}
       <met:fullName>${x(params.ruleName)}</met:fullName>
+      <met:accessLevel>${x(params.accessLevel)}</met:accessLevel>
+      ${accountSettingsXml}
+      ${criteriaXml}
       <met:label>${x(params.label)}</met:label>
       ${sharedFromXml}
       ${sharedToXml}
@@ -2499,11 +2525,18 @@ function buildBusinessProcessXml(params: {
   objectName: string; processName: string; label: string;
   description?: string; isActive: boolean; values: string[];
 }): string {
+  // Salesforce refuses a <default> on an Opportunity/Lead business process ("Cannot specify a
+  // default on: Opportunity") — the default stage comes from the picklist itself. <closed> is
+  // only meaningful for Case/Solution processes, so scope both rather than always emitting them.
+  // Opportunity REFUSES a <default> ("Cannot specify a default on: Opportunity"); Case, Lead and
+  // Solution REQUIRE one ("No default value specified"). <closed> is only valid on Case/Solution.
+  const forbidsDefault = params.objectName === "Opportunity";
+  const supportsClosed = params.objectName === "Case" || params.objectName === "Solution";
   const valuesXml = params.values.map((v, i) => `
     <met:values>
       <met:fullName>${x(v)}</met:fullName>
-      <met:default>${i === 0 ? "true" : "false"}</met:default>
-      <met:closed>false</met:closed>
+      ${forbidsDefault ? "" : `<met:default>${i === 0 ? "true" : "false"}</met:default>`}
+      ${supportsClosed ? `<met:closed>false</met:closed>` : ""}
     </met:values>`).join("\n");
   // Note: BusinessProcess has no <label> field in the Metadata API schema (Salesforce rejects it
   // with "label invalid at this location") — params.label is only used as the description fallback.
@@ -2619,54 +2652,71 @@ function buildMatchingRuleXml(params: {
   objectName: string; ruleName: string; label: string; description?: string;
   matchingRuleItems: Array<{ fieldName: string; matchingMethod: string; blankValueBehavior: string }>;
 }): string {
+  // MatchingRuleItem.fieldName is the BARE field name — Salesforce qualifies it with the object
+  // itself, so prefixing here yields 'Account.Account.Name'.
   const itemsXml = params.matchingRuleItems.map(item => `
     <met:matchingRuleItems>
       <met:blankValueBehavior>${x(item.blankValueBehavior)}</met:blankValueBehavior>
-      <met:fieldName>${x(params.objectName)}.${x(item.fieldName)}</met:fieldName>
+      <met:fieldName>${x(item.fieldName.includes(".") ? item.fieldName.split(".").pop()! : item.fieldName)}</met:fieldName>
       <met:matchingMethod>${x(item.matchingMethod)}</met:matchingMethod>
     </met:matchingRuleItems>`).join("\n");
+  // XSD sequence: fullName, booleanFilter, description, label, matchingRuleItems, ruleStatus.
+  // ruleStatus is set by the platform on activation; the old <matchingRuleStatus> is not a member.
   return `<met:metadata xsi:type="met:MatchingRule" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.objectName)}.${x(params.ruleName)}</met:fullName>
-    <met:label>${x(params.label)}</met:label>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
-    <met:matchingRuleStatus>Active</met:matchingRuleStatus>
+    <met:label>${x(params.label)}</met:label>
     ${itemsXml}
+    <met:ruleStatus>Active</met:ruleStatus>
   </met:metadata>`;
 }
 
 function buildDuplicateRuleXml(params: {
   objectName: string; ruleName: string; label: string; description?: string;
   isActive: boolean; actionOnInsert: string; actionOnUpdate: string;
-  alertMessage?: string;
+  alertMessage?: string; sortOrder?: number;
   matchingRules: Array<{ matchingRule: string; matchingRuleItems?: Array<{ fieldName: string; matchingField: string }> }>;
 }): string {
-  const mrXml = params.matchingRules.map((mr) => `
-    <met:duplicateRuleMatchRules>
-      <met:duplicateRuleItemProperties></met:duplicateRuleItemProperties>
-      <met:matchingRule>${x(params.objectName)}.${x(mr.matchingRule)}</met:matchingRule>
+  // Shape verified against a live retrieve of Account.Standard_Account_Duplicate_Rule:
+  //   duplicateRuleMatchRules sequence = matchRuleSObjectType, matchingRule, objectMapping
+  // <matchRuleSObjectType> is what identifies the object — without it Salesforce reports
+  // "null isn't a valid object for duplicate rules". <matchingRule> is the BARE developer
+  // name (not Object.Rule), and objectMapping is nil unless fields are actually mapped.
+  const mrXml = params.matchingRules.map((mr) => {
+    const items = mr.matchingRuleItems ?? [];
+    const bareRule = mr.matchingRule.includes(".") ? mr.matchingRule.split(".").pop()! : mr.matchingRule;
+    const objectMappingXml = items.length > 0 ? `
       <met:objectMapping>
-        <met:inputObject>${x(params.objectName)}</met:inputObject>
+        <met:inputObject>${x(params.objectName)}</met:inputObject>${items.map(item => `
+        <met:mappingFields>
+          <met:inputField>${x(item.fieldName)}</met:inputField>
+          <met:outputField>${x(item.matchingField)}</met:outputField>
+        </met:mappingFields>`).join("\n")}
         <met:outputObject>${x(params.objectName)}</met:outputObject>
-        ${(mr.matchingRuleItems ?? []).map(item => `
-          <met:mappingFields>
-            <met:inputField>${x(item.fieldName)}</met:inputField>
-            <met:outputField>${x(item.matchingField)}</met:outputField>
-          </met:mappingFields>`).join("\n")}
-      </met:objectMapping>
-    </met:duplicateRuleMatchRules>`).join("\n");
+      </met:objectMapping>` : `
+      <met:objectMapping xsi:nil="true"/>`;
+    return `
+    <met:duplicateRuleMatchRules>
+      <met:matchRuleSObjectType>${x(params.objectName)}</met:matchRuleSObjectType>
+      <met:matchingRule>${x(bareRule)}</met:matchingRule>${objectMappingXml}
+    </met:duplicateRuleMatchRules>`;
+  }).join("\n");
+  // XSD sequence: fullName, actionOnInsert, actionOnUpdate, alertText, description,
+  // duplicateRuleFilter, duplicateRuleMatchRules, isActive, masterLabel, operationsOnInsert,
+  // operationsOnUpdate, securityOption, sortOrder. The label element is <masterLabel>.
   return `<met:metadata xsi:type="met:DuplicateRule" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.objectName)}.${x(params.ruleName)}</met:fullName>
-    <met:label>${x(params.label)}</met:label>
-    <met:isActive>${params.isActive}</met:isActive>
-    ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
     <met:actionOnInsert>${x(params.actionOnInsert)}</met:actionOnInsert>
     <met:actionOnUpdate>${x(params.actionOnUpdate)}</met:actionOnUpdate>
     ${params.alertMessage ? `<met:alertText>${x(params.alertMessage)}</met:alertText>` : ""}
+    ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
     ${mrXml}
-    <met:operationsOnInsert>None</met:operationsOnInsert>
-    <met:operationsOnUpdate>None</met:operationsOnUpdate>
-    <met:securityOption>EnforcedWithWarning</met:securityOption>
-    <met:sortOrder>1</met:sortOrder>
+    <met:isActive>${params.isActive}</met:isActive>
+    <met:masterLabel>${x(params.label)}</met:masterLabel>
+    ${params.actionOnInsert === "Block" || params.alertMessage ? `<met:operationsOnInsert>Alert</met:operationsOnInsert>` : ""}
+    ${params.actionOnUpdate === "Block" || params.alertMessage ? `<met:operationsOnUpdate>Alert</met:operationsOnUpdate>` : ""}
+    <met:securityOption>EnforceSharingRules</met:securityOption>
+    <met:sortOrder>${params.sortOrder ?? 1}</met:sortOrder>
   </met:metadata>`;
 }
 
@@ -2854,7 +2904,20 @@ export async function createMatchingRule(auth: SalesforceAuth, params: Parameter
   return upsertMetadata(auth, buildMatchingRuleXml(params));
 }
 export async function createDuplicateRule(auth: SalesforceAuth, params: Parameters<typeof buildDuplicateRuleXml>[0]): Promise<ToolResult> {
-  return upsertMetadata(auth, buildDuplicateRuleXml(params));
+  // Salesforce requires sortOrder to be sequential from 1 across all duplicate rules on the
+  // object, so a hardcoded 1 fails on any org that already has one. Count what exists first.
+  let sortOrder = 1;
+  try {
+    const client = createClient(auth);
+    const safeObj = String(params.objectName).replace(/'/g, "\\'");
+    const resp = await client.get(`/query?q=${encodeURIComponent(`SELECT Id FROM DuplicateRule WHERE SobjectType = '${safeObj}'`)}`);
+    const existing = (resp.data as any).totalSize ?? ((resp.data as any).records?.length ?? 0);
+    sortOrder = Number(existing) + 1;
+  } catch {
+    // Fall back to 1 — if DuplicateRule is not queryable the deploy will report the real reason.
+  }
+  const xml = buildDuplicateRuleXml({ ...params, sortOrder });
+  return upsertMetadata(auth, xml);
 }
 export async function createPermissionSet(auth: SalesforceAuth, params: Parameters<typeof buildPermissionSetXml>[0]): Promise<ToolResult> {
   return upsertMetadata(auth, buildPermissionSetXml(params));
@@ -4185,8 +4248,33 @@ export async function updateUser(auth: SalesforceAuth, params: Record<string, an
         if (params.title !== undefined) updates["Title"] = params.title;
         if (params.department !== undefined) updates["Department"] = params.department;
         if (params.phone !== undefined) updates["Phone"] = params.phone;
+        // profileName / roleName / additionalFields are declared in UpdateUserSchema; apply them too.
+        if (params.profileName !== undefined) {
+            const safeProfile = String(params.profileName).replace(/'/g, "\\'");
+            const pResp = await client.get(`/query?q=${encodeURIComponent(`SELECT Id FROM Profile WHERE Name = '${safeProfile}'`)}`);
+            const profileId = (pResp.data as any).records?.[0]?.Id;
+            if (!profileId) return { success: false, message: `Profile '${params.profileName}' not found.` };
+            updates["ProfileId"] = profileId;
+        }
+        if (params.roleName !== undefined) {
+            if (params.roleName === "" || params.roleName === null) {
+                updates["UserRoleId"] = null;
+            } else {
+                const safeRole = String(params.roleName).replace(/'/g, "\\'");
+                const rResp = await client.get(`/query?q=${encodeURIComponent(`SELECT Id FROM UserRole WHERE DeveloperName = '${safeRole}' OR Name = '${safeRole}'`)}`);
+                const roleId = (rResp.data as any).records?.[0]?.Id;
+                if (!roleId) return { success: false, message: `Role '${params.roleName}' not found.` };
+                updates["UserRoleId"] = roleId;
+            }
+        }
+        if (params.additionalFields && typeof params.additionalFields === "object") {
+            Object.assign(updates, params.additionalFields);
+        }
+        if (Object.keys(updates).length === 0) {
+            return { success: false, message: `Nothing to update for '${params.username}' — pass at least one field to change.` };
+        }
         await client.patch(`/sobjects/User/${userId}`, updates);
-        return { success: true, fullName: userId, created: false, message: `User '${params.username}' updated successfully.` };
+        return { success: true, fullName: userId, created: false, message: `User '${params.username}' updated: ${Object.keys(updates).join(", ")}.` };
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
     }
@@ -4194,16 +4282,60 @@ export async function updateUser(auth: SalesforceAuth, params: Record<string, an
 export async function assignQueueMember(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const client = createClient(auth);
-        const safeQueue = params.queueApiName.replace(/'/g, "\\'");
+        // Schema is AssignQueueMemberSchema: { queueDeveloperName, users?: string[], roles?: string[] }.
+        const queueName: string = params.queueDeveloperName;
+        const usernames: string[] = params.users ?? [];
+        const roleNames: string[] = params.roles ?? [];
+        if (usernames.length === 0 && roleNames.length === 0) {
+            return { success: false, message: "Provide at least one entry in 'users' (usernames) or 'roles' (role API names)." };
+        }
+        const safeQueue = queueName.replace(/'/g, "\\'");
         const qResp = await client.get(`/query?q=${encodeURIComponent(`SELECT Id FROM Group WHERE DeveloperName = '${safeQueue}' AND Type = 'Queue'`)}`);
         const queueId = (qResp.data as any).records?.[0]?.Id;
-        if (!queueId) return { success: false, message: `Queue '${params.queueApiName}' not found.` };
-        const safeUsername = params.username.replace(/'/g, "\\'");
-        const uResp = await client.get(`/query?q=${encodeURIComponent(`SELECT Id FROM User WHERE Username = '${safeUsername}'`)}`);
-        const userId = (uResp.data as any).records?.[0]?.Id;
-        if (!userId) return { success: false, message: `User '${params.username}' not found.` };
-        const resp = await client.post("/sobjects/GroupMember", { GroupId: queueId, UserOrGroupId: userId });
-        return { success: true, fullName: (resp.data as any).id, created: true, message: `User '${params.username}' added to queue '${params.queueApiName}'.` };
+        if (!queueId) return { success: false, message: `Queue '${queueName}' not found. Create it first with sf_create_queue.` };
+
+        const added: string[] = [];
+        const failed: string[] = [];
+
+        for (const username of usernames) {
+            const safeUsername = username.replace(/'/g, "\\'");
+            const uResp = await client.get(`/query?q=${encodeURIComponent(`SELECT Id FROM User WHERE Username = '${safeUsername}'`)}`);
+            const userId = (uResp.data as any).records?.[0]?.Id;
+            if (!userId) { failed.push(`user '${username}' not found`); continue; }
+            try {
+                await client.post("/sobjects/GroupMember", { GroupId: queueId, UserOrGroupId: userId });
+                added.push(username);
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                if (/DUPLICATE_VALUE|already a member/i.test(msg)) added.push(`${username} (already a member)`);
+                else failed.push(`user '${username}': ${sanitizeError(msg)}`);
+            }
+        }
+
+        // A role is added by its role Group (Type='Role'), which grants every user in that role.
+        for (const roleName of roleNames) {
+            const safeRole = roleName.replace(/'/g, "\\'");
+            const rResp = await client.get(`/query?q=${encodeURIComponent(`SELECT Id FROM Group WHERE Type = 'Role' AND RelatedId IN (SELECT Id FROM UserRole WHERE DeveloperName = '${safeRole}')`)}`);
+            const roleGroupId = (rResp.data as any).records?.[0]?.Id;
+            if (!roleGroupId) { failed.push(`role '${roleName}' not found`); continue; }
+            try {
+                await client.post("/sobjects/GroupMember", { GroupId: queueId, UserOrGroupId: roleGroupId });
+                added.push(`role:${roleName}`);
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                if (/DUPLICATE_VALUE|already a member/i.test(msg)) added.push(`role:${roleName} (already a member)`);
+                else failed.push(`role '${roleName}': ${sanitizeError(msg)}`);
+            }
+        }
+
+        if (added.length === 0) {
+            return { success: false, message: `No members added to queue '${queueName}'. ${failed.join("; ")}` };
+        }
+        return {
+            success: true, fullName: queueName, created: true,
+            message: `Added ${added.length} member(s) to queue '${queueName}': ${added.join(", ")}.`
+                + (failed.length ? ` ${failed.length} failed: ${failed.join("; ")}.` : ""),
+        };
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
     }
@@ -4634,7 +4766,7 @@ export async function createFlexCard(auth: SalesforceAuth, params: Record<string
 </met:metadata>`;
         const result = await upsertMetadata(auth, xml);
         if (!result.success && (result.message?.includes("not available for this organization") || result.message?.includes("INVALID_TYPE"))) {
-            return { success: true, fullName: params.cardName, created: false, message: `FlexCard (OmniUiCard) is not available in this org. Requires OmniStudio or Vlocity enabled.` };
+            return { success: false, fullName: params.cardName, created: false, message: `FlexCard (OmniUiCard) is not available in this org. Requires OmniStudio or Vlocity enabled — nothing was created.` };
         }
         return result;
     } catch (err) {
@@ -4705,7 +4837,7 @@ export async function createOmniScript(auth: SalesforceAuth, params: Record<stri
 </met:metadata>`;
         const result = await upsertMetadata(auth, xml);
         if (!result.success && (result.message?.includes("not available for this organization") || result.message?.includes("INVALID_TYPE"))) {
-            return { success: true, fullName, created: false, message: `OmniScript is not available in this org. Requires OmniStudio or Vlocity enabled.` };
+            return { success: false, fullName, created: false, message: `OmniScript is not available in this org. Requires OmniStudio or Vlocity enabled — nothing was created.` };
         }
         return result;
     } catch (err) {
@@ -4796,7 +4928,7 @@ export async function createDataRaptor(auth: SalesforceAuth, params: Record<stri
 </met:metadata>`;
         const result = await upsertMetadata(auth, xml);
         if (!result.success && result.message?.includes("Type is illegal here")) {
-            return { success: true, fullName: params.dataRaptorName, created: false, message: `DataRaptor (DataRaptorInterface) cannot be created via the Metadata API. Use the OmniStudio Designer in Setup instead.` };
+            return { success: false, fullName: params.dataRaptorName, created: false, message: `DataRaptor (DataRaptorInterface) cannot be created via the Metadata API — nothing was created. Use the OmniStudio Designer in Setup instead.` };
         }
         return result;
     } catch (err) {
@@ -4831,7 +4963,7 @@ export async function createIntegrationProcedure(auth: SalesforceAuth, params: R
 </met:metadata>`;
         const result = await upsertMetadata(auth, xml);
         if (!result.success && (result.message?.includes("not available for this organization") || result.message?.includes("INVALID_TYPE") || result.message?.includes("OmniProcessType"))) {
-            return { success: true, fullName, created: false, message: `Integration Procedure is not available in this org. Requires OmniStudio enabled.` };
+            return { success: false, fullName, created: false, message: `Integration Procedure is not available in this org. Requires OmniStudio enabled — nothing was created.` };
         }
         return result;
     } catch (err) {
@@ -5582,22 +5714,45 @@ export async function createEinsteinPrediction(auth: SalesforceAuth, params: Rec
 }
 export async function createNextBestAction(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
-        const recsXml = (params.recommendations ?? []).map((rec: any) => `
-    <met:recommendationDefinitions>
-        <met:developerName>${x(rec.name)}</met:developerName>
-        <met:label>${x(rec.label)}</met:label>
-        <met:acceptanceLabel>${x(rec.acceptanceLabel ?? "Accept")}</met:acceptanceLabel>
-        <met:rejectionLabel>${x(rec.rejectionLabel ?? "Decline")}</met:rejectionLabel>
-        ${rec.actionReference ? `<met:actionReference>${x(rec.actionReference)}</met:actionReference>` : ""}
-    </met:recommendationDefinitions>`).join("");
+        // RecommendationStrategy has only: fullName, description, masterLabel, strategyNodes.
+        // There is no <label>, no <contextObjectName> and no <recommendationDefinitions> —
+        // recommendations are separate Recommendation SObject records, created below.
         const xml = `<met:metadata xsi:type="met:RecommendationStrategy" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.strategyName)}</met:fullName>
-    <met:label>${x(params.label)}</met:label>
-    <met:contextObjectName>${x(params.contextObjectApiName)}</met:contextObjectName>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
-    ${recsXml}
+    <met:label>${x(params.label)}</met:label>
 </met:metadata>`;
-        return await upsertMetadata(auth, xml);
+        const result = await upsertMetadata(auth, xml);
+        if (!result.success) return result;
+
+        // Recommendations are records, not metadata — create them separately so the caller's
+        // 'recommendations' input is not silently dropped.
+        const recs = (params.recommendations ?? []) as Array<Record<string, any>>;
+        const madeRecs: string[] = [];
+        const recFailures: string[] = [];
+        if (recs.length > 0) {
+            const client = createClient(auth);
+            for (const rec of recs) {
+                try {
+                    await client.post("/sobjects/Recommendation", {
+                        Name: rec.label,
+                        Description: rec.label,
+                        AcceptanceLabel: rec.acceptanceLabel ?? "Accept",
+                        RejectionLabel: rec.rejectionLabel ?? "Decline",
+                        ...(rec.actionReference ? { ActionReference: rec.actionReference } : {}),
+                    });
+                    madeRecs.push(rec.name);
+                } catch (err) {
+                    recFailures.push(`${rec.name}: ${sanitizeError(err instanceof Error ? err.message : String(err))}`);
+                }
+            }
+        }
+        return {
+            ...result,
+            message: `${result.message ?? `Strategy '${params.strategyName}' deployed.`}`
+                + (madeRecs.length ? ` Created ${madeRecs.length} recommendation record(s): ${madeRecs.join(", ")}.` : "")
+                + (recFailures.length ? ` ${recFailures.length} recommendation(s) failed: ${recFailures.join("; ")}.` : ""),
+        };
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
     }
@@ -5699,9 +5854,36 @@ export async function freezeUser(auth: SalesforceAuth, params: Record<string, an
 export async function createETMTerritory(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const client = createClient(auth);
-        const typeResp = await client.get(`/query?q=${encodeURIComponent(`SELECT Id FROM Territory2Type WHERE MasterLabel = '${params.territoryType.replace(/'/g, "\\'")}'`)}`);
-        const typeId = (typeResp.data as any).records?.[0]?.Id;
-        if (!typeId) return { success: false, message: `Territory2Type '${params.territoryType}' not found. Ensure Enterprise Territory Management is enabled.` };
+        // territoryType is optional in the schema. Resolve by DeveloperName or MasterLabel; when it is
+        // omitted, fall back to the org's only type, and otherwise say which ones exist.
+        let typeId: string | undefined;
+        if (params.territoryType) {
+            const safeType = String(params.territoryType).replace(/'/g, "\\'");
+            const typeResp = await client.get(`/query?q=${encodeURIComponent(`SELECT Id FROM Territory2Type WHERE DeveloperName = '${safeType}' OR MasterLabel = '${safeType}'`)}`);
+            typeId = (typeResp.data as any).records?.[0]?.Id;
+            if (!typeId) {
+                return { success: false, message: `Territory2Type '${params.territoryType}' not found. Ensure Enterprise Territory Management is enabled and the type exists.` };
+            }
+        } else {
+            let allResp;
+            try {
+                allResp = await client.get(`/query?q=${encodeURIComponent("SELECT Id, DeveloperName FROM Territory2Type")}`);
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                if (/Territory2Type|INVALID_TYPE|sObject type/i.test(msg)) {
+                    return { success: false, message: "Enterprise Territory Management is not enabled in this org, so no territory can be created. Enable it in Setup → Territory Settings first." };
+                }
+                throw err;
+            }
+            const types = ((allResp.data as any).records ?? []) as Array<{ Id: string; DeveloperName: string }>;
+            if (types.length === 0) {
+                return { success: false, message: "No Territory2Type exists in this org. Enable Enterprise Territory Management and create a territory type first." };
+            }
+            if (types.length > 1) {
+                return { success: false, message: `territoryType is required when the org has more than one Territory2Type. Available: ${types.map(t => t.DeveloperName).join(", ")}.` };
+            }
+            typeId = types[0].Id;
+        }
         let parentId;
         if (params.parentTerritoryName) {
             const parentResp = await client.get(`/query?q=${encodeURIComponent(`SELECT Id FROM Territory2 WHERE Name = '${params.parentTerritoryName.replace(/'/g, "\\'")}'`)}`);
@@ -6697,10 +6879,12 @@ export async function createSearchLayout(auth: SalesforceAuth, params: Record<st
 export async function assignLayoutToRecordType(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const profileNames: string[] = params.profileNames ?? ["Admin"];
-        const mappings = profileNames.map(() => `<met:recordTypeToLayoutMappings>
-            <met:layoutName>${x(params.layoutName)}</met:layoutName>
-            <met:recordType>${x(params.recordTypeName)}</met:recordType>
-        </met:recordTypeToLayoutMappings>`).join("\n");
+        // Profile uses <layoutAssignments> with <layout>, not <recordTypeToLayoutMappings>.
+        // One assignment per call; a Profile upsert targets a single profile.
+        const mappings = `<met:layoutAssignments>
+            <met:layout>${x(params.layoutName)}</met:layout>
+            <met:recordType>${x(params.objectName)}.${x(params.recordTypeName)}</met:recordType>
+        </met:layoutAssignments>`;
         const xml = `<met:metadata xsi:type="met:Profile" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(profileNames[0] ?? "Admin")}</met:fullName>
     ${mappings}
@@ -7096,10 +7280,11 @@ export async function createNotificationType(auth: SalesforceAuth, params: Recor
     try {
         const xml = `<met:metadata xsi:type="met:CustomNotificationType" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.fullName)}</met:fullName>
-    <met:masterLabel>${x(params.masterLabel)}</met:masterLabel>
     <met:customNotifTypeName>${x(params.customNotifTypeName)}</met:customNotifTypeName>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
-    <met:channels><met:desktop>true</met:desktop><met:mobile>true</met:mobile></met:channels>
+    <met:desktop>true</met:desktop>
+    <met:masterLabel>${x(params.masterLabel)}</met:masterLabel>
+    <met:mobile>true</met:mobile>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
@@ -7545,15 +7730,16 @@ export async function createEntitlementProcess(auth: SalesforceAuth, params: Rec
     </met:milestones>`).join("\n");
         const xml = `<met:metadata xsi:type="met:EntitlementProcess" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.fullName)}</met:fullName>
-    <met:name>${x(params.name)}</met:name>
-    <met:isActive>true</met:isActive>
-    <met:isVersionDefault>true</met:isVersionDefault>
-    <met:versionNumber>1</met:versionNumber>
-    ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+    <met:active>true</met:active>
     ${params.businessHoursName ? `<met:businessHours>${x(params.businessHoursName)}</met:businessHours>` : ""}
-    ${params.entryStartDateField ? `<met:entryStartDateField>${x(params.entryStartDateField)}</met:entryStartDateField>` : ""}
+    ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+    <met:entryStartDateField>${x(params.entryStartDateField ?? "Case.CreatedDate")}</met:entryStartDateField>
     ${params.exitCriteriaBooleanFilter ? `<met:exitCriteriaBooleanFilter>${x(params.exitCriteriaBooleanFilter)}</met:exitCriteriaBooleanFilter>` : ""}
+    ${params.exitCriteriaFormula ? `<met:exitCriteriaFormula>${x(params.exitCriteriaFormula)}</met:exitCriteriaFormula>` : ""}
+    <met:isVersionDefault>true</met:isVersionDefault>
     ${milestonesXml}
+    <met:name>${x(params.name)}</met:name>
+    <met:versionNumber>1</met:versionNumber>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
@@ -7565,7 +7751,6 @@ export async function createMilestone(auth: SalesforceAuth, params: Record<strin
     try {
         const xml = `<met:metadata xsi:type="met:MilestoneType" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.fullName)}</met:fullName>
-    <met:name>${x(params.name)}</met:name>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
     ${params.recurrenceType ? `<met:recurrenceType>${x(params.recurrenceType)}</met:recurrenceType>` : ""}
 </met:metadata>`;
@@ -7712,7 +7897,7 @@ export async function createVisualforcePage(auth: SalesforceAuth, params: Record
         const { default: JSZip } = await import("jszip");
         const apiVer = String(params.apiVersion ?? API_VERSION);
         const pageName = params.pageName;
-        const metaXml = `<?xml version="1.0" encoding="UTF-8"?>\n<ApexPage xmlns="http://soap.sforce.com/2006/04/metadata">\n    <apiVersion>${apiVer}</apiVersion>\n    <label>${x(params.label)}</label>\n    ${params.description ? `<description>${x(params.description)}</description>` : ""}\n    <showHeader>${params.showHeader !== false ? "true" : "false"}</showHeader>\n    <sidebar>${params.sidebar !== false ? "true" : "false"}</sidebar>\n</ApexPage>`;
+        const metaXml = `<?xml version="1.0" encoding="UTF-8"?>\n<ApexPage xmlns="http://soap.sforce.com/2006/04/metadata">\n    <apiVersion>${apiVer}</apiVersion>\n    <label>${x(params.label)}</label>\n    ${params.description ? `<description>${x(params.description)}</description>` : ""}\n</ApexPage>`;
         const pageContent = params.content ?? `<apex:page>\n  <!-- Add your Visualforce markup here -->\n</apex:page>`;
         const pkgXml = `<?xml version="1.0" encoding="UTF-8"?>\n<Package xmlns="http://soap.sforce.com/2006/04/metadata">\n  <types><members>${pageName}</members><name>ApexPage</name></types>\n  <version>${apiVer}</version>\n</Package>`;
         const zip = new JSZip();
@@ -7757,26 +7942,44 @@ export async function createVisualforceComponent(auth: SalesforceAuth, params: R
 
 export async function createVisualforceEmailTemplate(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
-        const xml = `<met:metadata xsi:type="met:EmailTemplate" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <met:fullName>unfiled$public/${x(params.templateName)}</met:fullName>
-    <met:name>${x(params.templateName)}</met:name>
-    <met:subject>${x(params.subject)}</met:subject>
-    <met:type>visualforce</met:type>
-    <met:recipientType>${x(params.recipientType)}</met:recipientType>
-    <met:relatedEntityType>${x(params.relatedEntityType)}</met:relatedEntityType>
-    ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
-    <met:isActive>true</met:isActive>
-</met:metadata>`;
-        const result = await upsertMetadata(auth, xml);
+        // A visualforce EmailTemplate carries its markup as CONTENT, so it must go through a ZIP
+        // deploy. The old SOAP upsertMetadata path sent metadata only: the body was never
+        // deployed and Salesforce rejected the template for having no <messaging:emailTemplate>.
+        const { default: JSZip } = await import("jszip");
+        const apiVer = String(params.apiVersion ?? API_VERSION);
+        const name: string = params.templateName;
+        const folder = "unfiled$public";
+        const hasWrapper = /<messaging:emailTemplate[\s>]/i.test(params.htmlBody ?? "");
+        const markup = hasWrapper ? params.htmlBody : `<messaging:emailTemplate subject="${x(params.subject)}" recipientType="${x(params.recipientType)}"${params.relatedEntityType ? ` relatedToType="${x(params.relatedEntityType)}"` : ""}>
+  <messaging:htmlEmailBody>${params.htmlBody ?? ""}</messaging:htmlEmailBody>
+  <messaging:plainTextEmailBody>${x(params.textBody ?? "")}</messaging:plainTextEmailBody>
+</messaging:emailTemplate>`;
+        const metaXml = `<?xml version="1.0" encoding="UTF-8"?>
+<EmailTemplate xmlns="http://soap.sforce.com/2006/04/metadata">
+    <apiVersion>${apiVer}</apiVersion>
+    <available>true</available>
+    ${params.description ? `<description>${x(params.description)}</description>` : ""}
+    <encodingKey>UTF-8</encodingKey>
+    <name>${x(name)}</name>
+    <style>none</style>
+    <subject>${x(params.subject)}</subject>
+    <type>visualforce</type>
+</EmailTemplate>`;
+        const pkgXml = `<?xml version="1.0" encoding="UTF-8"?>
+<Package xmlns="http://soap.sforce.com/2006/04/metadata">
+  <types><members>${folder}/${name}</members><name>EmailTemplate</name></types>
+  <version>${apiVer}</version>
+</Package>`;
+        const zip = new JSZip();
+        zip.file("package.xml", pkgXml);
+        zip.file(`email/${folder}/${name}.email`, markup);
+        zip.file(`email/${folder}/${name}.email-meta.xml`, metaXml);
+        const buffer = await zip.generateAsync({ type: "nodebuffer" });
+        const { deployZip, pollDeployStatus } = await import("./deployment.js");
+        const deployId = await deployZip(auth, buffer.toString("base64"), { rollbackOnError: true });
+        const result = await pollDeployStatus(auth, deployId, 10 * 60 * 1000);
         if (!result.success) return result;
-        return {
-            success: true,
-            fullName: params.templateName,
-            created: result.created,
-            message: `VF email template '${params.templateName}' ${result.created ? "created" : "updated"} successfully.`,
-            htmlBody: params.htmlBody,
-            textBody: params.textBody,
-        };
+        return { success: true, fullName: name, created: true, message: `VF email template '${name}' deployed with its markup.` };
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
     }
@@ -7828,11 +8031,14 @@ export async function createCustomButton(auth: SalesforceAuth, params: Record<st
         const contentSource = contentSourceMap[params.contentSource] ?? params.contentSource;
         const xml = `<met:metadata xsi:type="met:WebLink" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(fullName)}</met:fullName>
-    <met:label>${x(params.label)}</met:label>
-    <met:availability>${x(params.buttonType)}</met:availability>
-    <met:displayType>button</met:displayType>
+    <met:availability>online</met:availability>
+    <met:displayType>${params.buttonType === "massAction" ? "massActionButton" : "button"}</met:displayType>
+    <met:encodingKey>UTF-8</met:encodingKey>
     <met:linkType>${x(contentSource)}</met:linkType>
+    <met:masterLabel>${x(params.label)}</met:masterLabel>
     <met:openType>${x(params.openType)}</met:openType>
+    <met:position>none</met:position>
+    <met:protected>false</met:protected>
     <met:url>${x(params.content)}</met:url>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
@@ -8176,14 +8382,19 @@ export async function createPlatformCachePartition(auth: SalesforceAuth, params:
     <met:fullName>${x(params.partitionName)}</met:fullName>
     <met:isDefaultPartition>${params.isDefaultPartition ?? false}</met:isDefaultPartition>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
-    <met:partitionType>
-        <met:partitionTypeName>Session</met:partitionTypeName>
+    <met:masterLabel>${x(params.partitionName)}</met:masterLabel>
+    <met:platformCachePartitionTypes>
         <met:allocatedCapacity>${params.sessionCacheSize ?? 0}</met:allocatedCapacity>
-    </met:partitionType>
-    <met:partitionType>
-        <met:partitionTypeName>Organization</met:partitionTypeName>
+        <met:allocatedPurchasedCapacity>0</met:allocatedPurchasedCapacity>
+        <met:allocatedTrialCapacity>0</met:allocatedTrialCapacity>
+        <met:cacheType>Session</met:cacheType>
+    </met:platformCachePartitionTypes>
+    <met:platformCachePartitionTypes>
         <met:allocatedCapacity>${params.orgCacheSize ?? 0}</met:allocatedCapacity>
-    </met:partitionType>
+        <met:allocatedPurchasedCapacity>0</met:allocatedPurchasedCapacity>
+        <met:allocatedTrialCapacity>0</met:allocatedTrialCapacity>
+        <met:cacheType>Organization</met:cacheType>
+    </met:platformCachePartitionTypes>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
@@ -8314,8 +8525,8 @@ export async function translateCustomLabel(auth: SalesforceAuth, params: Record<
         const xml = `<met:metadata xsi:type="met:Translations" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.language)}</met:fullName>
     <met:customLabels>
+        <met:label>${x(params.translatedValue)}</met:label>
         <met:name>${x(params.labelName)}</met:name>
-        <met:value>${x(params.translatedValue)}</met:value>
     </met:customLabels>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);

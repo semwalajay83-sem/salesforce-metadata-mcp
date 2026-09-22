@@ -129,14 +129,17 @@ export function registerAutomationTools(server: McpServer): void {
             <met:minutesToEscalation>${a.minutesToEscalation}</met:minutesToEscalation>
             ${a.assignedTo ? `<met:assignedTo>${x(a.assignedTo)}</met:assignedTo><met:assignedToType>${x(a.assignedToType ?? "Queue")}</met:assignedToType>` : ""}
             ${a.notifyTo ? `<met:notifyTo>${x(a.notifyTo)}</met:notifyTo>` : ""}
-            ${a.template ? `<met:template>${x(a.template)}</met:template>` : ""}
+            ${a.template ? `<met:notifyToTemplate>${x(a.template)}</met:notifyToTemplate>` : ""}
           </met:escalationAction>`).join("\n");
+        // RuleEntry sequence: booleanFilter, businessHours, criteriaItems, escalationAction,
+        // escalationStartTime, formula. The element is escalationStartTime, not ...StartDate.
         return `<met:ruleEntry>
-          ${criteriaXml}
-          ${e.formula ? `<met:formula>${x(e.formula)}</met:formula>` : ""}
           <met:businessHours>${x(e.businessHours)}</met:businessHours>
-          <met:escalationStartDate>${e.escalationStartDate}</met:escalationStartDate>
+          <met:businessHoursSource>Static</met:businessHoursSource>
+          ${criteriaXml}
           ${actionsXml}
+          <met:escalationStartTime>${e.escalationStartDate}</met:escalationStartTime>
+          ${e.formula ? `<met:formula>${x(e.formula)}</met:formula>` : ""}
         </met:ruleEntry>`;
       }).join("\n");
       const xml = `<met:metadata xsi:type="met:EscalationRules" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">

@@ -1573,7 +1573,13 @@ export const UpdateUserSchema = z.object({
   profileName: z.string().optional().describe("New profile name"),
   roleName: z.string().optional().describe("New role name (or empty string to remove role)"),
   isActive: z.boolean().optional().describe("Activate or deactivate the user"),
-  additionalFields: z.record(z.unknown()).optional().describe("Additional User SObject fields to update, e.g. {Department: 'Sales', Title: 'Manager'}"),
+  firstName: z.string().optional().describe("New first name"),
+  lastName: z.string().optional().describe("New last name"),
+  email: z.string().email().optional().describe("New email address"),
+  title: z.string().optional().describe("New job title"),
+  department: z.string().optional().describe("New department"),
+  phone: z.string().optional().describe("New phone number"),
+  additionalFields: z.record(z.unknown()).optional().describe("Additional User SObject fields to update, e.g. {Division: 'West'}"),
 }).strict();
 
 export const AssignQueueMemberSchema = z.object({
@@ -2671,7 +2677,7 @@ export const CreateDataCategorySchema = z.object({
     name: z.string().min(1).describe("Category API name"),
     label: z.string().min(1).describe("Category label"),
     subCategories: z.array(z.string()).optional().describe("Sub-category API names"),
-  })).optional().describe("Top-level categories"),
+  })).min(1).describe("Top-level categories"),
 });
 
 export const BulkInsertRecordsSchema = z.object({
@@ -2877,6 +2883,7 @@ export const CreateEntitlementProcessSchema = z.object({
   businessHoursName: z.string().optional().describe("Business hours name (optional)"),
   entryStartDateField: z.string().optional().describe("Start date field API name"),
   exitCriteriaBooleanFilter: z.string().optional().describe("Boolean filter for exit criteria"),
+  exitCriteriaFormula: z.string().optional().describe("Formula that ends the process, e.g. \"IsClosed\". Salesforce requires exit criteria OR a formula."),
   milestones: z.array(z.object({
     name: z.string().min(1).describe("Milestone name"),
     minutesCustomClass: z.string().optional().describe("Apex class for custom milestone timing"),
