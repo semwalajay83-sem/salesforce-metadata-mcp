@@ -124,11 +124,12 @@ export function buildFixtures(ctx) {
   // ── PHASE 2 — object-scoped metadata. ──────────────────────────────────────────────────────
   add(2, "sf_get_metadata_dependencies", { args: () => ({ componentType: "CustomObject", componentName: OBJ }) });
   add(2, "sf_create_custom_metadata_type", {
-    args: () => ({ fullName: `QAMdt${T}__mdt`, label: `QA Mdt ${T}`, pluralLabel: `QA Mdt ${T}s` }),
+    args: () => ({ fullName: `QAMdt${T}__mdt`, label: `QA Mdt ${T}`, pluralLabel: `QA Mdt ${T}s`,
+      fields: [{ fullName: "Val__c", label: "Val", type: "Text", length: 100 }] }),
     after: () => track("CustomObject", `QAMdt${T}__mdt`),
   });
   add(2, "sf_create_custom_metadata_record", {
-    args: () => ({ typeName: `QAMdt${T}__mdt`, recordName: `QARec${T}`, label: `QA Rec ${T}`, values: [{ field: "DeveloperName", value: `QARec${T}` }] }),
+    args: () => ({ typeName: `QAMdt${T}__mdt`, recordName: `QARec${T}`, label: `QA Rec ${T}`, values: [{ field: "Val__c", value: "qa" }] }),
   });
   add(2, "sf_create_custom_label", {
     args: () => ({ fullName: `QALbl${T}`, value: "QA sweep label" }),
@@ -146,7 +147,8 @@ export function buildFixtures(ctx) {
     args: () => ({ objectName: "Case", processName: `QABp${T}`, label: `QA BP ${T}`, values: ["New", "Closed"] }),
   });
   add(2, "sf_create_sharing_rule", {
-    args: () => ({ objectName: OBJ, ruleName: `QASr${T}`, label: `QA SR ${T}`, sharedTo: { group: "AllInternalUsers" }, accessLevel: "Read" }),
+    args: () => ({ objectName: OBJ, ruleName: `QASr${T}`, label: `QA SR ${T}`, sharedTo: { type: "group", name: "AllInternalUsers" }, accessLevel: "Read",
+      criteriaItems: [{ field: "Name", operation: "notEqual", value: "" }] }),
   });
   add(2, "sf_create_quick_action", {
     args: () => ({ objectName: OBJ, actionName: `QAQa${T}`, label: `QA QA ${T}`, actionType: "Update", fields: [{ name: "Notes__c" }] }),
@@ -161,7 +163,7 @@ export function buildFixtures(ctx) {
   });
   add(2, "sf_create_path_assistant", {
     args: () => ({ objectName: OBJ, fieldName: "Stage__c", pathName: `QAPath${T}`, label: `QA Path ${T}`,
-      pathItems: [{ value: "Draft", info: "start" }] }),
+      pathItems: [{ picklistValue: "Draft", infoTitle: "Getting started" }] }),
     after: () => track("PathAssistant", `QAPath${T}`),
   });
   add(2, "sf_create_report_type", {
@@ -202,16 +204,16 @@ export function buildFixtures(ctx) {
   });
   add(3, "sf_create_assignment_rule", {
     args: () => ({ objectName: "Lead", ruleName: `QAAr${T}`, label: `QA AR ${T}`,
-      ruleEntries: [{ criteriaItems: [{ field: "Lead.LeadSource", operation: "equals", value: "Web" }], assignedTo: ctx.vals.username, assignedToType: "User" }] }),
+      ruleEntries: [{ entryOrder: 1, criteriaItems: [{ field: "Lead.LeadSource", operation: "equals", value: "Web" }], assignedTo: ctx.vals.username, assignedToType: "User" }] }),
   });
   add(3, "sf_create_auto_response_rule", {
     args: () => ({ objectName: "Lead", ruleName: `QAAur${T}`, label: `QA AUR ${T}`,
-      ruleEntries: [{ criteriaItems: [{ field: "Lead.LeadSource", operation: "equals", value: "Web" }],
+      ruleEntries: [{ entryOrder: 1, criteriaItems: [{ field: "Lead.LeadSource", operation: "equals", value: "Web" }],
         senderEmail: ctx.vals.email, senderName: "QA", template: `unfiled$public/QAEt${T}` }] }),
   });
   add(3, "sf_create_escalation_rule", {
     args: () => ({ ruleName: `QAEr${T}`, label: `QA ER ${T}`,
-      ruleEntries: [{ businessHours: "Default", escalationStartDate: "CaseCreation",
+      ruleEntries: [{ entryOrder: 1, businessHours: "Default", escalationStartDate: "CaseCreation",
         criteriaItems: [{ field: "Case.Status", operation: "equals", value: "New" }],
         escalationActions: [{ minutesToEscalation: 30, assignedTo: ctx.vals.username, assignedToType: "User" }] }] }),
   });
@@ -238,7 +240,7 @@ export function buildFixtures(ctx) {
   });
   add(3, "sf_create_scheduled_flow", {
     args: () => ({ fullName: `QASf${T}`, label: `QA SF ${T}`, objectApiName: OBJ,
-      scheduledPaths: [{ name: "p1", offsetNumber: 1, offsetUnit: "Days", timeSource: "RecordTriggerEvent" }] }),
+      scheduledPaths: [{ label: "One day later", offsetNumber: 1, offsetUnit: "Days", timeSource: "RecordTriggerEvent" }] }),
     after: () => track("Flow", `QASf${T}`),
   });
   add(3, "sf_create_apex_email_service", {
@@ -247,7 +249,7 @@ export function buildFixtures(ctx) {
   add(3, "sf_create_approval_process", {
     args: () => ({ objectName: OBJ, processName: `QAAp${T}`, label: `QA AP ${T}`,
       allowedSubmitters: [{ type: "owner" }],
-      approvalSteps: [{ name: "Step1", label: "Step 1", assignedApprover: { type: "user", name: ctx.vals.username } }] }),
+      approvalSteps: [{ name: "Step1", label: "Step 1", approvers: [{ type: "user", name: ctx.vals.username }] }] }),
   });
 
   // ── PHASE 4 — apex, flows, UI bundles. ─────────────────────────────────────────────────────
@@ -436,11 +438,11 @@ export function buildFixtures(ctx) {
   add(7, "sf_create_csp_setting", { args: () => ({ endpointUrl: "https://example.com", cspDirectives: ["connect-src"] }) });
   add(7, "sf_create_connected_app", {
     args: () => ({ fullName: `QACa${T}`, label: `QA CA ${T}`, contactEmail: ctx.vals.email,
-      callbackUrls: ["https://example.com/cb"], scopes: ["Api", "RefreshToken"] }),
+      callbackUrls: ["https://example.com/cb"], scopes: ["api", "web"] }),
     after: () => track("ConnectedApp", `QACa${T}`),
   });
   add(7, "sf_create_external_client_app", {
-    args: () => ({ fullName: `QAEca${T}`, label: `QA ECA ${T}`, contactEmail: ctx.vals.email, scopes: ["Api"] }),
+    args: () => ({ fullName: `QAEca${T}`, label: `QA ECA ${T}`, contactEmail: ctx.vals.email, scopes: ["Basic"] }),
   });
   add(7, "sf_create_connected_app_oauth_policy", {
     args: () => ({ connectedAppName: `QACa${T}`, refreshTokenPolicy: "infinite" }),
@@ -501,7 +503,7 @@ export function buildFixtures(ctx) {
   add(9, "sf_create_embedded_service", { args: () => ({ label: `QA ES ${T}`, site: `QASite${T}` }), expectUnavailable: true });
   add(9, "sf_create_bot_routing", { args: () => ({ botName: `QABot${T}`, transferToQueueName: `QAQueue${T}` }), expectUnavailable: true });
   add(9, "sf_create_knowledge_article_type", {
-    args: () => ({ articleTypeName: `QAKa${T}`, label: `QA KA ${T}`, pluralLabel: `QA KA ${T}s` }),
+    args: () => ({ articleTypeName: `QAKa${T}__kav`, label: `QA KA ${T}`, pluralLabel: `QA KA ${T}s` }),
     expectUnavailable: true,
   });
   add(9, "sf_create_entitlement_process", { args: () => ({ fullName: `QAEp${T}`, name: `QA EP ${T}`, SObjectType: "Case" }), expectUnavailable: true });
@@ -528,16 +530,16 @@ export function buildFixtures(ctx) {
     ["sf_activate_flexcard", () => ({ cardName: `QAFc${T}` })],
     ["sf_get_flexcard", () => ({ cardName: `QAFc${T}` })],
     ["sf_create_omniscript", () => ({ label: `QA OS ${T}`, type: "QA", subType: `Sub${T}` })],
-    ["sf_update_omniscript", () => ({ type: "QA", subType: `Sub${T}`, label: `QA OS ${T} v2` })],
+    ["sf_update_omniscript", () => ({ type: "QA", subType: `Sub${T}` })],
     ["sf_activate_omniscript", () => ({ type: "QA", subType: `Sub${T}` })],
     ["sf_get_omniscript", () => ({ type: "QA", subType: `Sub${T}` })],
     ["sf_create_dataraptor", () => ({ dataRaptorName: `QADr2${T}`, label: `QA DR2 ${T}`, interfaceType: "Extract" })],
     ["sf_get_dataraptor", () => ({ dataRaptorName: `QADr2${T}` })],
     ["sf_create_integration_procedure", () => ({ procedureName: `QAIp${T}`, subType: `Sub${T}`, label: `QA IP ${T}` })],
-    ["sf_update_integration_procedure", () => ({ procedureName: `QAIp${T}`, subType: `Sub${T}`, label: `QA IP ${T} v2` })],
+    ["sf_update_integration_procedure", () => ({ procedureName: `QAIp${T}`, subType: `Sub${T}` })],
     ["sf_get_integration_procedure", () => ({ procedureName: `QAIp${T}`, subType: `Sub${T}` })],
     ["sf_activate_integration_procedure", () => ({ procedureName: `QAIp${T}`, subType: `Sub${T}` })],
-    ["sf_create_calculation_matrix", () => ({ matrixName: `QACm${T}`, label: `QA CM ${T}`, inputVariables: ["a"], outputVariables: ["b"] })],
+    ["sf_create_calculation_matrix", () => ({ matrixName: `QACm${T}`, label: `QA CM ${T}`, inputVariables: [{ name: "a", dataType: "Text" }], outputVariables: [{ name: "b", dataType: "Text" }] })],
     ["sf_create_calculation_procedure", () => ({ procedureName: `QACpr${T}`, label: `QA CPR ${T}` })],
     ["sf_export_omnistudio_component", () => ({ componentType: "FlexCard", componentName: `QAFc${T}` })],
     ["sf_import_omnistudio_component", () => ({ componentType: "FlexCard", newName: `QAFc2${T}`, jsonDefinition: "{}" })],
