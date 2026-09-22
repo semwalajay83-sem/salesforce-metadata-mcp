@@ -215,7 +215,7 @@ export function buildFixtures(ctx) {
     args: () => ({ ruleName: `QAEr${T}`, label: `QA ER ${T}`,
       ruleEntries: [{ entryOrder: 1, businessHours: "Default", escalationStartDate: "CaseCreation",
         criteriaItems: [{ field: "Case.Status", operation: "equals", value: "New" }],
-        escalationActions: [{ minutesToEscalation: 30, assignedTo: ctx.vals.username, assignedToType: "User" }] }] }),
+        escalationActions: [{ minutesToEscalation: 30, assignedTo: ctx.vals.username, assignedToType: "User", template: `unfiled$public/QAEt${T}` }] }] }),
   });
   add(3, "sf_create_matching_rule", {
     args: () => ({ objectName: "Lead", ruleName: `QAMr${T}`, label: `QA MR ${T}`,

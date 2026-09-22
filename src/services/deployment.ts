@@ -186,6 +186,11 @@ function inferMetadataPath(type: string, name: string): string {
     case "GenAiPlannerBundle": return `genAiPlannerBundles/${name}/${name}.genAiPlannerBundle`;
     case "GlobalValueSet": return `globalValueSets/${name}.globalValueSet`;
     case "CustomMetadata": return `customMetadata/${name}.md`;
+    // Every custom label in an org lives in ONE file. Without this case the fallback invented a
+    // per-label path that Salesforce never looks in, and the deploy failed with "was named in
+    // package.xml, but was not found in zipped directory". Fixed 2026-09-22.
+    case "CustomLabel":
+    case "CustomLabels": return `labels/CustomLabels.labels`;
     case "AssignmentRules": return `assignmentRules/${name}.assignmentRules`;
     case "AutoResponseRules": return `autoResponseRules/${name}.autoResponseRules`;
     case "EscalationRules": return `escalationRules/${name}.escalationRules`;
@@ -197,8 +202,6 @@ function inferMetadataPath(type: string, name: string): string {
     case "ReportType": return `reportTypes/${name}.reportType`;
     case "ApexPage": return `pages/${name}.page-meta.xml`;
     case "ApexComponent": return `components/${name}.component-meta.xml`;
-    case "WorkflowRule": return `workflows/${name.split(".")[0]}.workflow`;
-    case "WorkflowFieldUpdate": return `workflows/${name.split(".")[0]}.workflow`;
     case "WorkflowOutboundMessage": return `workflows/${name.split(".")[0]}.workflow`;
     case "FlowTest": return `flowtests/${name}.flowtest`;
     default: {
@@ -233,10 +236,21 @@ export async function buildGenericDeployZip(
   const packageXml = buildPackageXml(types, apiVersion);
   zip.file("package.xml", packageXml);
   if (componentsXml) {
+    // Several component types share one file (all custom labels, all of an object's workflow).
+    // Writing them one at a time means the last one silently wins and the others vanish from the
+    // deploy — say so instead of shipping a zip that is quietly missing components.
+    const written = new Map<string, string>();
     for (const c of componentsXml) {
       assertSafeComponentName(c.type, c.name);
       const filePath = inferMetadataPath(c.type, c.name);
       assertSafeZipPath(filePath);
+      const prev = written.get(filePath);
+      if (prev && prev !== c.name) {
+        throw new Error(
+          `'${c.name}' and '${prev}' both deploy to ${filePath}, and this builder writes one component per file, so one would silently overwrite the other. Deploy them in separate calls, or pass a single component whose XML contains both.`
+        );
+      }
+      written.set(filePath, c.name);
       zip.file(filePath, c.xml);
     }
   }

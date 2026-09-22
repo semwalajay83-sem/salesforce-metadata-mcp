@@ -124,6 +124,15 @@ export function registerAutomationTools(server: McpServer): void {
             <met:operation>${x(c.operation)}</met:operation>
             <met:value>${x(c.value)}</met:value>
           </met:criteriaItems>`).join("\n");
+        // Salesforce requires notifyToTemplate on every escalation action ("notifyToTemplate is
+        // required") and there is nothing sensible to invent, so name the missing parameter rather
+        // than letting the API phrase it. Added 2026-09-22.
+        const missingTemplate = e.escalationActions.filter((a: { template?: string }) => !a.template);
+        if (missingTemplate.length) {
+          throw new Error(
+            `Each escalation action needs 'template' — the email template Salesforce notifies with. ${missingTemplate.length} of ${e.escalationActions.length} action(s) in rule entry ${e.entryOrder ?? "?"} did not have one.`
+          );
+        }
         const actionsXml = e.escalationActions.map((a: { minutesToEscalation: number; assignedTo?: string; assignedToType?: string; notifyTo?: string; template?: string }) => `
           <met:escalationAction>
             <met:minutesToEscalation>${a.minutesToEscalation}</met:minutesToEscalation>
@@ -150,8 +159,10 @@ export function registerAutomationTools(server: McpServer): void {
           ${entriesXml}
         </met:escalationRule>
       </met:metadata>`;
-      const { upsertMetadata } = await import("../services/salesforce.js");
-      const result = await upsertMetadata(auth, xml);
+      const { upsertContainerRule } = await import("../services/salesforce.js");
+      const result = await upsertContainerRule(auth, xml, {
+        type: "EscalationRules", containerName: "Case", ruleName: params.ruleName,
+      });
       return resultContent(result);
     }
   );

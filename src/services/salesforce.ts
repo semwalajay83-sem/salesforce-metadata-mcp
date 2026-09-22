@@ -2824,7 +2824,7 @@ export async function upsertMetadata(auth: SalesforceAuth, metadataXml: string):
  * So when that specific error comes back, ask the org who is right. Anything else is passed through
  * untouched — this only second-guesses the one error Salesforce is known to be wrong about.
  */
-async function upsertContainerRule(
+export async function upsertContainerRule(
     auth: SalesforceAuth,
     xml: string,
     opts: { type: string; containerName: string; ruleName: string }
@@ -8550,8 +8550,28 @@ ${parts.join("\n")}
 
 export async function createHoliday(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
+        // Same trap as createBusinessHours: BusinessHoursSettings is a SETTINGS component, so an
+        // upsert replaces the whole thing. Writing only <holidays> would delete every set of
+        // business hours in the org — Salesforce refused it ("Must have at least one default
+        // business hours"), which is the only reason nothing was lost. Carry the existing business
+        // hours and the other holidays through. Fixed 2026-09-22.
+        const existingSettings = await readMetadataItem(auth, "BusinessHoursSettings", "BusinessHours");
+        if (!existingSettings.success) {
+            return { success: false, message: `Could not read the org's business hours settings, and writing without them would discard every set of business hours. ${existingSettings.message ?? ""}`.trim() };
+        }
+        const settingsRecords = String(existingSettings.rawXml ?? "").match(/<records[^>]*>([\s\S]*?)<\/records>/i)?.[1] ?? "";
+        const toMet = (blk: string): string => blk.replace(/<(\/?)(\w+)>/g, "<$1met:$2>");
+        const keptHours = (settingsRecords.match(/<businessHours>[\s\S]*?<\/businessHours>/gi) ?? [])
+            .map(toMet).join("\n    ");
+        const holidayName = String(params.name);
+        const keptHolidays = (settingsRecords.match(/<holidays>[\s\S]*?<\/holidays>/gi) ?? [])
+            .filter((blk) => !new RegExp(`<name>${holidayName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}</name>`, "i").test(blk))
+            .map(toMet).join("\n    ");
+
         const xml = `<met:metadata xsi:type="met:BusinessHoursSettings" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>BusinessHours</met:fullName>
+    ${keptHours}
+    ${keptHolidays}
     <met:holidays>
         <met:name>${x(params.name)}</met:name>
         ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
