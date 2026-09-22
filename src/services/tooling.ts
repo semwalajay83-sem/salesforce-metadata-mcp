@@ -143,6 +143,18 @@ interface ChangeSetQuery {
   records: ChangeSetRecord[];
 }
 
+/**
+ * The OutboundChangeSet Tooling object only exists where change sets are enabled, so these tools
+ * answered with a bare "Salesforce API error 404: NOT_FOUND" — indistinguishable from a broken
+ * tool. Added 2026-09-22, same treatment as devOpsError and sandboxError.
+ */
+function changeSetError(msg: string): string {
+  if (/NOT_FOUND|INVALID_TYPE|OutboundChangeSet|is not supported/i.test(msg)) {
+    return `Change sets are not available in this org — the OutboundChangeSet object is not exposed. Change sets require a production or sandbox org with deployment connections configured; a Developer Edition or scratch org has none. Use sf_deploy_metadata for direct metadata deployment instead. (Underlying error: ${msg})`;
+  }
+  return msg;
+}
+
 export async function createOutboundChangeSet(
   auth: SalesforceAuth,
   changeSetName: string,
@@ -161,7 +173,7 @@ export async function createOutboundChangeSet(
       message: `Outbound Change Set '${changeSetName}' created. ID: ${csId}\nView in Setup: ${auth.instanceUrl}/lightning/setup/DeployStatus/home`
     };
   } catch (err: unknown) {
-    return { success: false, message: err instanceof Error ? err.message : String(err) };
+    return { success: false, message: changeSetError(err instanceof Error ? err.message : String(err)) };
   }
 }
 

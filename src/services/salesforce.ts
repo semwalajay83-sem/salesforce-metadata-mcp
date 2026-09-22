@@ -8536,6 +8536,18 @@ export async function createConnectedAppOAuthPolicy(auth: SalesforceAuth, params
 
 // ─── CATEGORY F: Sandbox Management ──────────────────────────────────────────
 
+/**
+ * SandboxInfo does not exist in a Developer Edition org, so these tools answered with a bare
+ * "Salesforce API error 404: NOT_FOUND" — which reads like a broken tool rather than an edition
+ * that has no sandboxes. Added 2026-09-22, same treatment as devOpsError.
+ */
+function sandboxError(msg: string): string {
+    if (/NOT_FOUND|INVALID_TYPE|SandboxInfo|is not supported/i.test(msg)) {
+        return `Sandboxes are not available in this org — SandboxInfo is not exposed, which is normal for a Developer Edition or scratch org. Sandbox management needs a production org on an edition that includes sandboxes. (Underlying error: ${msg})`;
+    }
+    return msg;
+}
+
 export async function createSandbox(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const client = createClient(auth);
@@ -8549,7 +8561,7 @@ export async function createSandbox(auth: SalesforceAuth, params: Record<string,
         const resp = await client.post<{ id: string }>(`/tooling/sobjects/SandboxInfo`, body);
         return { success: true, id: resp.data.id, message: `Sandbox '${params.sandboxName}' creation initiated.` };
     } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+        return { success: false, message: sandboxError(sanitizeError(err instanceof Error ? err.message : String(err))) };
     }
 }
 
@@ -8566,7 +8578,7 @@ export async function refreshSandbox(auth: SalesforceAuth, params: Record<string
         });
         return { success: true, id: sandboxId, message: `Sandbox '${params.sandboxName}' refresh initiated.` };
     } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+        return { success: false, message: sandboxError(sanitizeError(err instanceof Error ? err.message : String(err))) };
     }
 }
 
@@ -8576,7 +8588,7 @@ export async function listSandboxes(auth: SalesforceAuth): Promise<any> {
         const resp = await client.get<{ records: Array<Record<string, any>> }>(`/tooling/query?q=${encodeURIComponent("SELECT Id,SandboxName,Status,LicenseType,CreatedDate,LastModifiedDate FROM SandboxInfo ORDER BY CreatedDate DESC")}`);
         return { success: true, sandboxes: resp.data.records, count: resp.data.records.length };
     } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+        return { success: false, message: sandboxError(sanitizeError(err instanceof Error ? err.message : String(err))) };
     }
 }
 
