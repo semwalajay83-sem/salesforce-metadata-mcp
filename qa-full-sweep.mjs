@@ -21,6 +21,10 @@
  */
 import { writeFileSync, mkdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+
+// The sf CLI target for independent verification. Follows SF_ALIAS so a sweep can run against a
+// scratch org without editing anything.
+const SF_CLI_ORG = process.env.SF_ALIAS ?? "demo-org";
 import { startServer } from "./qa-lib.mjs";
 import { buildFixtures, verifiersRef } from "./qa-fixtures.mjs";
 
@@ -55,17 +59,17 @@ function sfCli(args) {
 }
 function listMetadata(type) {
   if (mdCache.has(type)) return mdCache.get(type);
-  const r = sfCli(["org", "list", "metadata", "-m", type, "-o", "demo-org", "--json"]);
+  const r = sfCli(["org", "list", "metadata", "-m", type, "-o", SF_CLI_ORG, "--json"]);
   const names = new Set((r?.result ?? []).map((x) => x.fullName));
   mdCache.set(type, names);
   return names;
 }
 function soql(q) {
-  const r = sfCli(["data", "query", "-q", `"${q.replace(/"/g, '\\"')}"`, "-o", "demo-org", "--json"]);
+  const r = sfCli(["data", "query", "-q", `"${q.replace(/"/g, '\\"')}"`, "-o", SF_CLI_ORG, "--json"]);
   return r?.result?.records ?? null;
 }
 function toolingSoql(q) {
-  const r = sfCli(["data", "query", "-q", `"${q.replace(/"/g, '\\"')}"`, "-t", "-o", "demo-org", "--json"]);
+  const r = sfCli(["data", "query", "-q", `"${q.replace(/"/g, '\\"')}"`, "-t", "-o", SF_CLI_ORG, "--json"]);
   return r?.result?.records ?? null;
 }
 const verifiers = { listMetadata, soql, toolingSoql, invalidate: (t) => mdCache.delete(t) };
@@ -134,7 +138,7 @@ const liveNames = new Set(live.map((t) => t.name));
 console.log(`server exposes ${live.length} tools\n`);
 
 // seed the running user + a scratch dir; several fixtures need a real username/email
-const who = sfCli(["org", "display", "-o", "demo-org", "--json"]);
+const who = sfCli(["org", "display", "-o", SF_CLI_ORG, "--json"]);
 ctx.vals.username = who?.result?.username ?? "";
 ctx.vals.email = who?.result?.username ?? "";
 const me = soql(`SELECT Email FROM User WHERE Username = '${ctx.vals.username}'`);

@@ -13,6 +13,10 @@
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
+// The sf CLI target for independent verification. Follows SF_ALIAS so a sweep can run against a
+// scratch org without editing anything.
+const SF_CLI_ORG = process.env.SF_ALIAS ?? "demo-org";
+
 const report = JSON.parse(readFileSync("qa-sweep-report.json", "utf8"));
 const T = report.ts;
 const OBJ = report.ctx.obj;
@@ -81,7 +85,7 @@ function listMetadata(type) {
   if (cache.has(type)) return cache.get(type);
   let names = new Set();
   try {
-    const out = execFileSync("sf", ["org", "list", "metadata", "-m", type, "-o", "demo-org", "--json"],
+    const out = execFileSync("sf", ["org", "list", "metadata", "-m", type, "-o", SF_CLI_ORG, "--json"],
       { encoding: "utf8", timeout: 120000, shell: true });
     const j = JSON.parse(out.slice(out.indexOf("{")));
     names = new Set((j.result ?? []).map((x) => x.fullName));
@@ -108,7 +112,7 @@ function existsViaSoql(type, fullName) {
   if (!build) return false;
   const [q, tooling] = build(fullName);
   try {
-    const args = ["data", "query", "-q", `"${q}"`, "-o", "demo-org", "--json"];
+    const args = ["data", "query", "-q", `"${q}"`, "-o", SF_CLI_ORG, "--json"];
     if (tooling) args.splice(3, 0, "-t");
     const out = execFileSync("sf", args, { encoding: "utf8", timeout: 120000, shell: true });
     return (JSON.parse(out.slice(out.indexOf("{"))).result?.totalSize ?? 0) > 0;

@@ -40,3 +40,6 @@ Thumbs.db
 qa-sweep-report.json
 qa-inventory.json
 qa-sweep-*.log
+.qa-scratch-url
+qa-scratch/.sf/
+qa-scratch/.sfdx/

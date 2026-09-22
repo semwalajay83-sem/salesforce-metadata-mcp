@@ -1,0 +1,22 @@
+{
+  "orgName": "salesforce-metadata-mcp QA",
+  "edition": "Developer",
+  "features": [
+    "AuthorApex",
+    "DebugApex",
+    "Communities",
+    "ServiceCloud",
+    "Knowledge",
+    "LiveAgent",
+    "Sites",
+    "ContactsToMultipleAccounts"
+  ],
+  "settings": {
+    "lightningExperienceSettings": { "enableS1DesktopEnabled": true },
+    "communitiesSettings": { "enableNetworksEnabled": true },
+    "knowledgeSettings": { "enableKnowledge": true },
+    "omniChannelSettings": { "enableOmniChannel": true },
+    "entitlementSettings": { "enableEntitlements": true },
+    "forecastingSettings": { "enableForecasts": true }
+  }
+}
