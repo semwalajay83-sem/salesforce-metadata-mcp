@@ -2307,13 +2307,16 @@ function buildEmailTemplateXml(params: {
 
 function buildCustomNotificationTypeXml(params: {
   fullName: string; customNotifTypeName: string; description?: string;
-  desktop: boolean; mobile: boolean;
+  desktop: boolean; mobile: boolean; masterLabel?: string;
 }): string {
+  // masterLabel is mandatory to Salesforce ("Required field is missing: masterLabel") but was
+  // neither in the schema nor emitted here, so this tool could never succeed. Fixed 2026-09-22.
   return `<met:metadata xsi:type="met:CustomNotificationType" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.fullName)}</met:fullName>
     <met:customNotifTypeName>${x(params.customNotifTypeName)}</met:customNotifTypeName>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
     <met:desktop>${params.desktop}</met:desktop>
+    <met:masterLabel>${x(params.masterLabel ?? params.customNotifTypeName)}</met:masterLabel>
     <met:mobile>${params.mobile}</met:mobile>
   </met:metadata>`;
 }
@@ -6963,10 +6966,13 @@ export async function createCustomWebTab(auth: SalesforceAuth, params: Record<st
     try {
         const xml = `<met:metadata xsi:type="met:CustomTab" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.fullName)}</met:fullName>
-    <met:label>${x(params.label)}</met:label>
-    <met:url>${x(params.url)}</met:url>
-    <met:hasSidebar>${params.hasSidebar ?? false}</met:hasSidebar>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+    <met:frameHeight>${Number(params.frameHeight) || 600}</met:frameHeight>
+    <met:hasSidebar>${params.hasSidebar ?? false}</met:hasSidebar>
+    <met:label>${x(params.label)}</met:label>
+    <met:motif>${x(params.motif || "Custom53: Bell")}</met:motif>
+    <met:url>${x(params.url)}</met:url>
+    <met:urlEncodingKey>${x(params.urlEncodingKey || "UTF-8")}</met:urlEncodingKey>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {

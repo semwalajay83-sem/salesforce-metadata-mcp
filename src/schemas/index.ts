@@ -905,6 +905,7 @@ export const CreateCustomNotificationTypeSchema = z.object({
   description: z.string().optional().describe("Description"),
   desktop: z.boolean().default(true).describe("Enable for desktop (web browser)"),
   mobile: z.boolean().default(true).describe("Enable for mobile app"),
+  masterLabel: z.string().min(1).optional().describe("Display label for the notification type. Required by Salesforce; defaults to customNotifTypeName."),
 }).strict();
 
 // ─── REPORTING ────────────────────────────────────────────────────────────────
