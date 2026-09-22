@@ -1885,17 +1885,18 @@ function buildWorkflowFieldUpdateXml(params: {
   } else {
     valueXml = `<met:literalValue>${x(params.literalValue ?? "")}</met:literalValue>`;
   }
-  return `<met:metadata xsi:type="met:Workflow" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <met:fullName>${x(params.objectName)}</met:fullName>
-    <met:fieldUpdates>
-      <met:fullName>${x(params.actionName)}</met:fullName>
-      <met:field>${x(params.field)}</met:field>
-      ${valueXml}
-      <met:name>${x(params.label)}</met:name>
-      <met:notifyAssignee>${params.notifyAssignee}</met:notifyAssignee>
-      <met:operation>${operation}</met:operation>
-      <met:protected>false</met:protected>
-    </met:fieldUpdates>
+  // Addressed directly as 'Object.Name'. This used to be wrapped in a met:Workflow upsert keyed
+  // on the object, and a Workflow upsert REPLACES the object's entire workflow — every rule,
+  // alert, field update and outbound message on it. Salesforce answered with a 500
+  // UNKNOWN_EXCEPTION, which is the only reason nothing was destroyed. Fixed 2026-09-22.
+  return `<met:metadata xsi:type="met:WorkflowFieldUpdate" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <met:fullName>${x(params.objectName)}.${x(params.actionName)}</met:fullName>
+    <met:field>${x(params.field)}</met:field>
+    ${valueXml}
+    <met:name>${x(params.label)}</met:name>
+    <met:notifyAssignee>${params.notifyAssignee}</met:notifyAssignee>
+    <met:operation>${operation}</met:operation>
+    <met:protected>false</met:protected>
   </met:metadata>`;
 }
 
@@ -2010,17 +2011,18 @@ function buildEmailAlertXml(params: {
       <met:type>${x(r.type)}</met:type>
       ${r.recipient ? `<met:recipient>${x(r.recipient)}</met:recipient>` : ""}
     </met:recipients>`).join("\n");
-  return `<met:metadata xsi:type="met:Workflow" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <met:fullName>${x(params.objectName)}</met:fullName>
-    <met:alerts>
-      <met:fullName>${x(params.alertName)}</met:fullName>
-      <met:description>${x(params.description ?? params.label)}</met:description>
-      <met:protected>${params.protected}</met:protected>
-      ${recipientsXml}
-      ${params.senderAddress ? `<met:senderAddress>${x(params.senderAddress)}</met:senderAddress>` : ""}
-      <met:senderType>${x(params.senderType)}</met:senderType>
-      <met:template>${x(params.template)}</met:template>
-    </met:alerts>
+  // Addressed directly as 'Object.Name'. This used to be wrapped in a met:Workflow upsert keyed
+  // on the object, and a Workflow upsert REPLACES the object's entire workflow — every rule,
+  // alert, field update and outbound message on it. Salesforce answered with a 500
+  // UNKNOWN_EXCEPTION, which is the only reason nothing was destroyed. Fixed 2026-09-22.
+  return `<met:metadata xsi:type="met:WorkflowAlert" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <met:fullName>${x(params.objectName)}.${x(params.alertName)}</met:fullName>
+    <met:description>${x(params.description ?? params.label)}</met:description>
+    <met:protected>${params.protected}</met:protected>
+    ${recipientsXml}
+    ${params.senderAddress ? `<met:senderAddress>${x(params.senderAddress)}</met:senderAddress>` : ""}
+    <met:senderType>${x(params.senderType)}</met:senderType>
+    <met:template>${x(params.template)}</met:template>
   </met:metadata>`;
 }
 
@@ -7042,15 +7044,16 @@ export async function createWorkflowRule(auth: SalesforceAuth, params: Record<st
             criteriaXml = (params.criteriaItems as Array<Record<string, string>>).map(c =>
                 `<met:criteriaItems><met:field>${x(params.objectName)}.${x(c.field)}</met:field><met:operation>${x(c.operation)}</met:operation><met:value>${x(c.value)}</met:value></met:criteriaItems>`).join("\n");
         }
-        const xml = `<met:metadata xsi:type="met:Workflow" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <met:fullName>${x(params.objectName)}</met:fullName>
-    <met:rules>
-        <met:fullName>${x(params.fullName)}</met:fullName>
-        <met:active>${params.active ?? true}</met:active>
-        <met:triggerType>${x(params.triggerType)}</met:triggerType>
-        ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
-        ${criteriaXml}
-    </met:rules>
+        // See buildWorkflowFieldUpdateXml: a met:Workflow upsert replaces the object's whole
+        // workflow. WorkflowRule is addressable on its own as 'Object.Rule'. Fixed 2026-09-22.
+        // XSD sequence: actions, active, booleanFilter, criteriaItems, description, formula,
+        // triggerType, workflowTimeTriggers.
+        const xml = `<met:metadata xsi:type="met:WorkflowRule" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <met:fullName>${x(params.objectName)}.${x(params.fullName)}</met:fullName>
+    <met:active>${params.active ?? true}</met:active>
+    ${criteriaXml}
+    ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+    <met:triggerType>${x(params.triggerType)}</met:triggerType>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
@@ -7066,17 +7069,17 @@ export async function createFieldUpdate(auth: SalesforceAuth, params: Record<str
         } else if (params.operation === "Literal" && params.literalValue !== undefined) {
             opXml = `<met:literalValue>${x(params.literalValue)}</met:literalValue><met:operation>Literal</met:operation>`;
         }
-        const xml = `<met:metadata xsi:type="met:Workflow" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <met:fullName>${x(params.objectName)}</met:fullName>
-    <met:fieldUpdates>
-        <met:fullName>${x(params.fullName)}</met:fullName>
-        <met:name>${x(params.name)}</met:name>
-        <met:field>${x(params.field)}</met:field>
-        ${opXml}
-        <met:protected>false</met:protected>
-        <met:notifyAssignee>false</met:notifyAssignee>
-        ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
-    </met:fieldUpdates>
+        // Same fix as buildWorkflowFieldUpdateXml — this is the second, independent field-update
+        // builder in this file. XSD sequence: description, field, formula/literalValue, name,
+        // notifyAssignee, operation, protected. Fixed 2026-09-22.
+        const xml = `<met:metadata xsi:type="met:WorkflowFieldUpdate" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <met:fullName>${x(params.objectName)}.${x(params.fullName)}</met:fullName>
+    ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+    <met:field>${x(params.field)}</met:field>
+    ${opXml}
+    <met:name>${x(params.name)}</met:name>
+    <met:notifyAssignee>false</met:notifyAssignee>
+    <met:protected>false</met:protected>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
@@ -7087,18 +7090,40 @@ export async function createFieldUpdate(auth: SalesforceAuth, params: Record<str
 export async function createWorkflowOutboundMessage(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const fieldsXml = (params.fields as string[]).map(f => `<met:fields>${x(f)}</met:fields>`).join("\n");
-        const xml = `<met:metadata xsi:type="met:Workflow" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <met:fullName>${x(params.objectName)}</met:fullName>
-    <met:outboundMessages>
-        <met:fullName>${x(params.fullName)}</met:fullName>
-        <met:name>${x(params.name)}</met:name>
-        <met:endpointUrl>${x(params.endpointUrl)}</met:endpointUrl>
-        ${fieldsXml}
-        <met:includeSessionId>false</met:includeSessionId>
-        <met:protected>false</met:protected>
-        ${params.integrationUser ? `<met:integrationUser>${x(params.integrationUser)}</met:integrationUser>` : ""}
-        ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
-    </met:outboundMessages>
+        // As of v66 integrationUser is mandatory on an outbound message. createOutboundMessage (the
+        // other, unwired implementation of this) already resolved it this way; this path did not, so
+        // every call failed with "Required field is missing: integrationUser". Fixed 2026-09-22.
+        let integrationUser: string | undefined = params.integrationUser;
+        if (!integrationUser) {
+            try {
+                const client = createClient(auth);
+                const resp = await client.get("/chatter/users/me");
+                integrationUser = (resp.data as any)?.username ?? (resp.data as any)?.Username;
+            } catch { /* fall through to SOQL */ }
+        }
+        if (!integrationUser) {
+            try {
+                const client = createClient(auth);
+                const resp = await client.get(`/query?q=${encodeURIComponent("SELECT Username FROM User WHERE Id = UserInfo.getUserId()")}`);
+                integrationUser = (resp.data as any)?.records?.[0]?.Username;
+            } catch { /* reported below */ }
+        }
+        if (!integrationUser) {
+            return { success: false, message: "Could not determine the integration user for the outbound message, and Salesforce requires one. Pass integrationUser explicitly (a Salesforce username)." };
+        }
+        // Same fix as the rule and field-update builders above. XSD sequence: apiVersion,
+        // description, endpointUrl, fields, includeSessionId, integrationUser, name, protected.
+        // Fixed 2026-09-22.
+        const xml = `<met:metadata xsi:type="met:WorkflowOutboundMessage" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <met:fullName>${x(params.objectName)}.${x(params.fullName)}</met:fullName>
+    <met:apiVersion>${x(String(params.apiVersion ?? API_VERSION))}</met:apiVersion>
+    ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+    <met:endpointUrl>${x(params.endpointUrl)}</met:endpointUrl>
+    ${fieldsXml}
+    <met:includeSessionId>false</met:includeSessionId>
+    <met:integrationUser>${x(integrationUser)}</met:integrationUser>
+    <met:name>${x(params.name)}</met:name>
+    <met:protected>false</met:protected>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
