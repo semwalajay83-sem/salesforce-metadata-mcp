@@ -684,10 +684,17 @@ export const CreateDuplicateRuleSchema = z.object({
   label: z.string().min(1).describe("Display label"),
   description: z.string().optional().describe("Description"),
   isActive: z.boolean().default(true).describe("Whether this rule is active"),
-  actionOnInsert: z.enum(["Allow", "Block", "AllowWithAlert"]).default("AllowWithAlert")
-    .describe("What to do when a duplicate is found on insert"),
+  // Salesforce's DupeActionType enum is only Allow | Block — "allow with an alert" is Allow plus
+  // alertMessage, not a third value. The schema both offered "AllowWithAlert" AND defaulted to it,
+  // so the minimal call always died on "'AllowWithAlert' is not a valid value for the enum
+  // 'DupeActionType'". Still accepted as an alias so existing callers keep working, but it is
+  // folded to Allow before it reaches the API. Fixed 2026-09-22.
+  actionOnInsert: z.enum(["Allow", "Block", "AllowWithAlert"]).default("Allow")
+    .transform((v) => (v === "AllowWithAlert" ? "Allow" : v))
+    .describe("What to do when a duplicate is found on insert. Allow | Block ('AllowWithAlert' is accepted and means Allow + alertMessage)."),
   actionOnUpdate: z.enum(["Allow", "Block", "AllowWithAlert"]).default("Allow")
-    .describe("What to do when a duplicate is found on update"),
+    .transform((v) => (v === "AllowWithAlert" ? "Allow" : v))
+    .describe("What to do when a duplicate is found on update. Allow | Block ('AllowWithAlert' is accepted and means Allow + alertMessage)."),
   alertMessage: z.string().optional().describe("Custom message shown when duplicate is detected"),
   matchingRules: z.array(z.object({
     matchingRule: z.string().describe("Matching rule developer name (must exist first)"),

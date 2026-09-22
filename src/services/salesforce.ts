@@ -1943,7 +1943,7 @@ function buildCustomLabelXml(params: {
       <met:language>${x(params.language)}</met:language>
       ${params.categories ? `<met:categories>${x(params.categories)}</met:categories>` : ""}
       <met:protected>${params.protected}</met:protected>
-      ${params.shortDescription ? `<met:shortDescription>${x(params.shortDescription)}</met:shortDescription>` : ""}
+      <met:shortDescription>${x(params.shortDescription ?? params.fullName)}</met:shortDescription>
     </met:labels>
   </met:metadata>`;
 }
@@ -2180,7 +2180,7 @@ function buildNamedCredentialXml(params: {
 
 function buildLightningAppXml(params: {
   fullName: string; label: string; description?: string; navType: string;
-  uiType: string; setupExperience: string;
+  uiType: string; setupExperience: string; formFactor?: string;
   isNavAutoTempTabsDisabled: boolean; isNavPersonalizationDisabled: boolean;
   navItems?: Array<{ name: string; type: string; label?: string; defaultItem: boolean }>;
   utilityItems?: Array<{ name: string; type: string; label?: string; iconName?: string }>;
@@ -2203,6 +2203,7 @@ function buildLightningAppXml(params: {
     <met:fullName>${x(params.fullName)}</met:fullName>
     <met:label>${x(params.label)}</met:label>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+    <met:formFactors>${x(params.formFactor || "Large")}</met:formFactors>
     <met:navType>${x(params.navType || "Standard")}</met:navType>
     <met:uiType>${x(params.uiType || "Lightning")}</met:uiType>
     <met:setupExperience>${x(params.setupExperience)}</met:setupExperience>
@@ -2219,7 +2220,7 @@ function buildTabXml(params: {
 }): string {
   return `<met:metadata xsi:type="met:CustomTab" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.fullName)}</met:fullName>
-    <met:motif>${x(params.motif)}</met:motif>
+    <met:motif>${x(params.motif || "Custom53: Bell")}</met:motif>
     <met:customObject>${xmlBool(params.customObject)}</met:customObject>
     ${params.label ? `<met:label>${x(params.label)}</met:label>` : ""}
     ${params.url ? `<met:url>${x(params.url)}</met:url>` : ""}
@@ -6830,7 +6831,21 @@ export async function exportOmniStudioComponent(auth: SalesforceAuth, params: Re
 }
 export async function importOmniStudioComponent(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
-        const def = JSON.parse(params.jsonDefinition);
+        let def: any;
+        try {
+            def = JSON.parse(params.jsonDefinition);
+        } catch {
+            return { success: false, message: "jsonDefinition is not valid JSON. Pass the string returned by sf_export_omnistudio_component unchanged." };
+        }
+        // Anything missing here used to surface as "Cannot read properties of undefined (reading
+        // 'split')", which tells the caller nothing about what to do next.
+        const missing = ["xml", "fullName", "mdType"].filter((k) => !def?.[k]);
+        if (missing.length) {
+            return {
+                success: false,
+                message: `jsonDefinition is missing ${missing.join(", ")}. It must be the object returned by sf_export_omnistudio_component (which carries xml, fullName and mdType), not a hand-written or empty JSON object.`,
+            };
+        }
         let xml = def.xml;
         const oldName = def.fullName;
         xml = xml.split(oldName).join(params.newName);
@@ -7404,6 +7419,20 @@ export async function uninstallPackage(_auth: SalesforceAuth, params: Record<str
     return outcome.success ? { success: true, ...outcome.result } : outcome;
 }
 
+/**
+ * DevOps Center ships as the `sf_devops` managed package. When it is not installed the REST API
+ * simply 404s on sf_devops__Work_Item__c and friends, and every one of these tools returned a bare
+ * "Salesforce API error 404: NOT_FOUND" — which tells the caller nothing about the actual cause or
+ * the fix. Name the real reason. Added 2026-09-22 after a full-surface sweep found 11 tools all
+ * failing this way. */
+function devOpsError(msg: string): string {
+    if (/NOT_FOUND|INVALID_TYPE|sf_devops__|no such column|is not supported/i.test(msg)) {
+        return `DevOps Center does not appear to be set up in this org — the 'sf_devops' managed package provides the Work Item and Pipeline objects these tools read. Install and configure DevOps Center from Setup, then retry. (Underlying error: ${msg})`;
+    }
+    return msg;
+}
+
+
 export async function devOpsCreateWorkItem(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const client = createClient(auth);
@@ -7414,7 +7443,7 @@ export async function devOpsCreateWorkItem(auth: SalesforceAuth, params: Record<
         const resp = await client.post<{ id: string }>(`/sobjects/sf_devops__Work_Item__c`, body);
         return { success: true, id: resp.data.id, message: `Work item '${params.name}' created.` };
     } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+        return { success: false, message: devOpsError(sanitizeError(err instanceof Error ? err.message : String(err))) };
     }
 }
 
@@ -7424,7 +7453,7 @@ export async function devOpsPromoteWorkItem(auth: SalesforceAuth, params: Record
         const resp = await client.post<{ id: string }>(`/sobjects/sf_devops__Work_Item__c/${params.workItemId}/promote`, {});
         return { success: true, data: resp.data, message: `Work item ${params.workItemId} promoted.` };
     } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+        return { success: false, message: devOpsError(sanitizeError(err instanceof Error ? err.message : String(err))) };
     }
 }
 
@@ -7450,7 +7479,7 @@ export async function checkCodeCoverage(auth: SalesforceAuth, params: Record<str
         }
         return { success: true, records, count: records.length };
     } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+        return { success: false, message: devOpsError(sanitizeError(err instanceof Error ? err.message : String(err))) };
     }
 }
 
@@ -7463,7 +7492,7 @@ export async function detectDevOpsMergeConflict(auth: SalesforceAuth, params: Re
         const conflicts = await client.get<{ records: Array<Record<string, unknown>> }>(`/services/data/v${API_VERSION}/query?q=${encodeURIComponent(conflictQuery)}`);
         return { success: true, workItem: wi.data.records[0], conflicts: conflicts.data.records, hasConflicts: conflicts.data.records.length > 0 };
     } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+        return { success: false, message: devOpsError(sanitizeError(err instanceof Error ? err.message : String(err))) };
     }
 }
 
@@ -7476,7 +7505,7 @@ export async function resolveDevOpsMergeConflict(auth: SalesforceAuth, params: R
         });
         return { success: true, conflictId: params.conflictId, resolution: params.resolution, message: "Merge conflict marked as resolved." };
     } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+        return { success: false, message: devOpsError(sanitizeError(err instanceof Error ? err.message : String(err))) };
     }
 }
 
@@ -7488,7 +7517,7 @@ export async function checkoutDevOpsWorkItem(auth: SalesforceAuth, params: Recor
         });
         return { success: true, workItemId: params.workItemId, message: `Work item ${params.workItemId} checked out (status set to In Progress).` };
     } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+        return { success: false, message: devOpsError(sanitizeError(err instanceof Error ? err.message : String(err))) };
     }
 }
 
@@ -7501,7 +7530,7 @@ export async function commitDevOpsWorkItem(auth: SalesforceAuth, params: Record<
         });
         return { success: true, commitId: resp.data.id, message: `Commit created for work item ${params.workItemId}.` };
     } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+        return { success: false, message: devOpsError(sanitizeError(err instanceof Error ? err.message : String(err))) };
     }
 }
 
@@ -7516,7 +7545,7 @@ export async function createDevOpsPullRequest(auth: SalesforceAuth, params: Reco
         const resp = await client.post<{ id: string }>(`/sobjects/sf_devops__Pull_Request__c`, body);
         return { success: true, pullRequestId: resp.data.id, message: `Pull request '${params.title}' created for work item ${params.workItemId}.` };
     } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+        return { success: false, message: devOpsError(sanitizeError(err instanceof Error ? err.message : String(err))) };
     }
 }
 
@@ -7528,7 +7557,7 @@ export async function listDevOpsProjects(auth: SalesforceAuth, params: Record<st
         const resp = await client.get<{ records: Array<Record<string, unknown>> }>(`/services/data/v${API_VERSION}/query?q=${encodeURIComponent(query)}`);
         return { success: true, projects: resp.data.records, count: resp.data.records.length };
     } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+        return { success: false, message: devOpsError(sanitizeError(err instanceof Error ? err.message : String(err))) };
     }
 }
 
@@ -7545,7 +7574,7 @@ export async function listDevOpsWorkItems(auth: SalesforceAuth, params: Record<s
         const resp = await client.get<{ records: Array<Record<string, unknown>> }>(`/services/data/v${API_VERSION}/query?q=${encodeURIComponent(query)}`);
         return { success: true, workItems: resp.data.records, count: resp.data.records.length };
     } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+        return { success: false, message: devOpsError(sanitizeError(err instanceof Error ? err.message : String(err))) };
     }
 }
 
@@ -7556,7 +7585,7 @@ export async function checkDevOpsCommitStatus(auth: SalesforceAuth, params: Reco
         const resp = await client.get<{ records: Array<Record<string, unknown>> }>(`/services/data/v${API_VERSION}/query?q=${encodeURIComponent(query)}`);
         return { success: true, commits: resp.data.records, count: resp.data.records.length };
     } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+        return { success: false, message: devOpsError(sanitizeError(err instanceof Error ? err.message : String(err))) };
     }
 }
 
@@ -7568,7 +7597,7 @@ export async function promoteDevOpsWorkItem(auth: SalesforceAuth, params: Record
         });
         return { success: true, workItemId: params.workItemId, targetStageId: params.targetStageId, message: `Work item promoted to stage ${params.targetStageId}.` };
     } catch (err) {
-        return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+        return { success: false, message: devOpsError(sanitizeError(err instanceof Error ? err.message : String(err))) };
     }
 }
 
@@ -8027,11 +8056,12 @@ export async function createQuickAction(auth: SalesforceAuth, params: Record<str
     </met:quickActionLayoutItems>`).join("\n");
         const xml = `<met:metadata xsi:type="met:QuickAction" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(fullName)}</met:fullName>
-    <met:label>${x(params.label)}</met:label>
-    <met:type>${x(params.actionType)}</met:type>
-    ${params.targetObject ? `<met:targetObject>${x(params.targetObject)}</met:targetObject>` : ""}
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+    <met:label>${x(params.label)}</met:label>
+    <met:optionsCreateFeedItem>false</met:optionsCreateFeedItem>
     ${fieldsXml ? `<met:quickActionLayout><met:layoutSectionStyle>TwoColumnsTopToBottom</met:layoutSectionStyle><met:quickActionLayoutColumns>${fieldsXml}</met:quickActionLayoutColumns></met:quickActionLayout>` : ""}
+    ${params.targetObject ? `<met:targetObject>${x(params.targetObject)}</met:targetObject>` : ""}
+    <met:type>${x(params.actionType)}</met:type>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
@@ -8043,10 +8073,11 @@ export async function createGlobalAction(auth: SalesforceAuth, params: Record<st
     try {
         const xml = `<met:metadata xsi:type="met:QuickAction" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.actionName)}</met:fullName>
-    <met:label>${x(params.label)}</met:label>
-    <met:type>${x(params.actionType)}</met:type>
-    ${params.targetObject ? `<met:targetObject>${x(params.targetObject)}</met:targetObject>` : ""}
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+    <met:label>${x(params.label)}</met:label>
+    <met:optionsCreateFeedItem>false</met:optionsCreateFeedItem>
+    ${params.targetObject ? `<met:targetObject>${x(params.targetObject)}</met:targetObject>` : ""}
+    <met:type>${x(params.actionType)}</met:type>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
@@ -8177,6 +8208,7 @@ export async function createCustomApplication(auth: SalesforceAuth, params: Reco
     <met:formFactors>${x(params.formFactor ?? "Large")}</met:formFactors>
     <met:isNavAutoTempTabsDisabled>${params.isNavAutoTempTabsDisabled ?? false}</met:isNavAutoTempTabsDisabled>
     <met:navType>${x(params.navType ?? "Standard")}</met:navType>
+    <met:uiType>${x(params.uiType ?? "Lightning")}</met:uiType>
     ${tabsXml}
     ${utilityXml}
 </met:metadata>`;
