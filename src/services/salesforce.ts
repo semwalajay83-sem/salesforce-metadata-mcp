@@ -3113,7 +3113,25 @@ export async function createCspSetting(auth: SalesforceAuth, params: Parameters<
   return upsertMetadata(auth, buildCspTrustedSiteXml(params));
 }
 export async function createSharingRule(auth: SalesforceAuth, params: Parameters<typeof buildSharingRuleXml>[0]): Promise<ToolResult> {
-  return upsertMetadata(auth, buildSharingRuleXml(params));
+  const result = await upsertMetadata(auth, buildSharingRuleXml(params));
+  if (result.success) return result;
+  // A sharing rule only means something when the object's org-wide default RESTRICTS access — on a
+  // Public Read/Write object there is nothing left to share, and Salesforce answers with a bare 500
+  // UNKNOWN_EXCEPTION that says none of this. Only pay for the lookup when something went wrong.
+  // Added 2026-09-22.
+  if (/UNKNOWN_EXCEPTION|unexpected error/i.test(String(result.message ?? ""))) {
+    try {
+      const existing = await readMetadataItem(auth, "CustomObject", params.objectName);
+      const owd = String(existing.rawXml ?? "").match(/<sharingModel>([^<]+)<\/sharingModel>/i)?.[1];
+      if (owd && !/^(Private|Read|ControlledByParent)$/i.test(owd)) {
+        return {
+          ...result,
+          message: `Sharing rules require the object's org-wide default to restrict access, but '${params.objectName}' is set to '${owd}' — with that default every user already has this access, so there is nothing for a sharing rule to grant. Set the OWD to Private (or Read) first, then create the rule. (Salesforce's own error was: ${result.message})`,
+        } as ToolResult;
+      }
+    } catch { /* fall through to the original error */ }
+  }
+  return result;
 }
 export async function createRecordType(auth: SalesforceAuth, params: Parameters<typeof buildRecordTypeXml>[0]): Promise<ToolResult> {
   return upsertMetadata(auth, buildRecordTypeXml(params));

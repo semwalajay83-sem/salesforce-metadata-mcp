@@ -64,7 +64,9 @@ export function buildFixtures(ctx) {
 
   // ── PHASE 1 — foundation metadata everything else hangs off. ───────────────────────────────
   add(1, "sf_create_custom_object", {
-    args: () => ({ fullName: OBJ, label: `QA ${T}`, pluralLabel: `QA ${T}s` }),
+    args: () => ({ fullName: OBJ, label: `QA ${T}`, pluralLabel: `QA ${T}s`,
+      // Private OWD so the sharing-rule fixture in phase 2 has something to grant.
+      sharingModel: "Private" }),
     verify: (c, r, v) => { v.invalidate("CustomObject"); return v.listMetadata("CustomObject").has(OBJ) || `${OBJ} not in CustomObject list`; },
     after: () => track("CustomObject", OBJ),
   });
