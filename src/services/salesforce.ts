@@ -8122,9 +8122,30 @@ export async function createVisualforceEmailTemplate(auth: SalesforceAuth, param
 
 // ─── CATEGORY B: Quick Actions & Field Sets ───────────────────────────────────
 
+/**
+ * A quickActionLayout declared TwoColumnsTopToBottom must contain exactly two
+ * <quickActionLayoutColumns> elements — Salesforce rejects one with "QuickActionLayout must have two
+ * QuickActionColumns". Both action builders emitted a single column, so any action carrying a layout
+ * failed. Split the fields across two columns (the second may be empty). Added 2026-09-22.
+ */
+function buildQuickActionLayoutXml(fields: string[]): string {
+    if (!fields.length) return "";
+    const mid = Math.ceil(fields.length / 2);
+    const col = (items: string[]) =>
+        `<met:quickActionLayoutColumns>${items.map((f) => `<met:quickActionLayoutItems><met:field>${x(f)}</met:field></met:quickActionLayoutItems>`).join("")}</met:quickActionLayoutColumns>`;
+    return `<met:quickActionLayout><met:layoutSectionStyle>TwoColumnsTopToBottom</met:layoutSectionStyle>${col(fields.slice(0, mid))}${col(fields.slice(mid))}</met:quickActionLayout>`;
+}
+
 export async function createQuickAction(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const fullName = `${params.objectName}.${params.actionName}`;
+        // A Create action must name the object it creates. The schema documents targetObject as
+        // "required for Create type" but leaves it optional, so the minimal call failed with
+        // Salesforce's "Required fields are missing: [TargetSobjectType]". On an object-scoped
+        // action the sensible default is the object the action lives on. Fixed 2026-09-22.
+        if (params.actionType === "Create" && !params.targetObject) {
+            params = { ...params, targetObject: params.objectName };
+        }
         const fieldsXml = (params.fields ?? []).map((f: Record<string, any>) => `
     <met:quickActionLayoutItems>
         <met:field>${x(String(f.name))}</met:field>
@@ -8135,7 +8156,7 @@ export async function createQuickAction(auth: SalesforceAuth, params: Record<str
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
     <met:label>${x(params.label)}</met:label>
     <met:optionsCreateFeedItem>false</met:optionsCreateFeedItem>
-    ${fieldsXml ? `<met:quickActionLayout><met:layoutSectionStyle>TwoColumnsTopToBottom</met:layoutSectionStyle><met:quickActionLayoutColumns>${fieldsXml}</met:quickActionLayoutColumns></met:quickActionLayout>` : ""}
+    ${buildQuickActionLayoutXml((params.fields ?? []).map((f: any) => String(f.name ?? f)).filter(Boolean))}
     ${params.targetObject ? `<met:targetObject>${x(params.targetObject)}</met:targetObject>` : ""}
     <met:type>${x(params.actionType)}</met:type>
 </met:metadata>`;
@@ -8147,11 +8168,31 @@ export async function createQuickAction(auth: SalesforceAuth, params: Record<str
 
 export async function createGlobalAction(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
+        // Every global action needs a target object, not just Create ones — a LogACall global action
+        // targets Task, SendEmail targets EmailMessage. Without one Salesforce answers "Required
+        // fields are missing: [TargetSobjectType]", which does not name the parameter to set. Fill in
+        // the standard target where there is one, and say what is missing where there is not.
+        // Fixed 2026-09-22.
+        const GLOBAL_ACTION_TARGETS: Record<string, string> = { LogACall: "Task", SendEmail: "EmailMessage" };
+        if (!params.targetObject) {
+            const standard = GLOBAL_ACTION_TARGETS[params.actionType as string];
+            if (standard) params = { ...params, targetObject: standard };
+            else return { success: false, message: `A global action of type '${params.actionType}' must specify targetObject — the API name of the object the action acts on, e.g. 'Contact'.` };
+        }
+        // Salesforce also insists a global action carries a layout ("QuickActions of type LogACall
+        // must have a layout"), and none was ever emitted. Build one from the caller's fields, or
+        // fall back to the standard field for the action type. Fixed 2026-09-22.
+        const DEFAULT_ACTION_FIELDS: Record<string, string[]> = { LogACall: ["Subject"], SendEmail: ["Subject"] };
+        const layoutFields: string[] = (params.fields ?? []).map((f: any) => String(f.name ?? f))
+            .filter(Boolean);
+        const effectiveFields = layoutFields.length ? layoutFields : (DEFAULT_ACTION_FIELDS[params.actionType as string] ?? []);
+        const layoutXml = buildQuickActionLayoutXml(effectiveFields);
         const xml = `<met:metadata xsi:type="met:QuickAction" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.actionName)}</met:fullName>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
     <met:label>${x(params.label)}</met:label>
     <met:optionsCreateFeedItem>false</met:optionsCreateFeedItem>
+    ${layoutXml}
     ${params.targetObject ? `<met:targetObject>${x(params.targetObject)}</met:targetObject>` : ""}
     <met:type>${x(params.actionType)}</met:type>
 </met:metadata>`;
