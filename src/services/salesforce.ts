@@ -8475,7 +8475,17 @@ ${fieldNamesXml}
     ${pathItemsXml}
     <met:recordTypeName>${x(params.recordTypeName ?? "Master")}</met:recordTypeName>
 </met:metadata>`;
-        return await upsertMetadata(auth, xml);
+        const result = await upsertMetadata(auth, xml);
+        // "Master" is the right record type only for an object that has none. On an object WITH
+        // record types Salesforce cannot find it, and "Unable to find record type: Master" does not
+        // hint that recordTypeName is a parameter the caller can set. Added 2026-09-22.
+        if (!result.success && /Unable to find record type/i.test(String(result.message ?? "")) && !params.recordTypeName) {
+            return {
+                ...result,
+                message: `A path attaches to a record type, and '${params.objectName}' has its own — pass recordTypeName (the record type's API name). The 'Master' default only applies to objects with no record types. (Salesforce said: ${result.message})`,
+            };
+        }
+        return result;
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
     }

@@ -149,8 +149,8 @@ export function buildFixtures(ctx) {
     args: () => ({ objectName: "Case", processName: `QABp${T}`, label: `QA BP ${T}`, values: ["New", "Closed"] }),
   });
   add(2, "sf_create_sharing_rule", {
-    args: () => ({ objectName: OBJ, ruleName: `QASr${T}`, label: `QA SR ${T}`, sharedTo: { type: "group", name: "AllInternalUsers" }, accessLevel: "Read",
-      criteriaItems: [{ field: "Name", operation: "notEqual", value: "" }] }),
+    args: () => ({ objectName: OBJ, ruleName: `QASr${T}`, label: `QA SR ${T}`, sharedTo: { type: "allInternalUsers" }, accessLevel: "Read", ruleType: "criteria",
+      criteriaItems: [{ field: "Name", operation: "notEqual", value: "ZZZ" }] }),
   });
   add(2, "sf_create_quick_action", {
     args: () => ({ objectName: OBJ, actionName: `QAQa${T}`, label: `QA QA ${T}`, actionType: "Update", fields: [{ name: "Notes__c" }] }),
@@ -165,7 +165,7 @@ export function buildFixtures(ctx) {
   });
   add(2, "sf_create_path_assistant", {
     args: () => ({ objectName: OBJ, fieldName: "Stage__c", pathName: `QAPath${T}`, label: `QA Path ${T}`,
-      pathItems: [{ picklistValue: "Draft", infoTitle: "Getting started" }] }),
+      pathItems: [{ picklistValue: "Draft", infoTitle: "Getting started" }], recordTypeName: `QART${T}` }),
     after: () => track("PathAssistant", `QAPath${T}`),
   });
   add(2, "sf_create_report_type", {
