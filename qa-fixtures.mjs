@@ -477,17 +477,19 @@ export function buildFixtures(ctx) {
   add(7, "sf_translate_field_label", { args: () => ({ objectName: OBJ, fieldName: "Notes__c", language: "fr", translatedLabel: "Notes fr" }) });
 
   // ── PHASE 8 — reports & dashboards. ────────────────────────────────────────────────────────
-  add(8, "sf_create_report_folder", { args: () => ({ folderName: `QARf${T}`, label: `QA RF ${T}` }), after: () => track("ReportFolder", `QARf${T}`) });
+  add(8, "sf_create_report_folder", { args: () => ({ folderName: `QARf${T}`, label: `QA RF ${T}`, folderType: "Report" }), after: () => track("ReportFolder", `QARf${T}`) });
+  add(8, "sf_create_report_folder", { args: () => ({ folderName: `QADf${T}`, label: `QA DF ${T}`, folderType: "Dashboard" }),
+    note: "dashboard folder — a dashboard cannot live in a report folder" });
   add(8, "sf_share_report_folder", { args: () => ({ folderName: `QARf${T}`, shareWith: [{ type: "Group", name: "AllInternalUsers", accessLevel: "View" }] }) });
   add(8, "sf_create_report", {
-    args: () => ({ reportName: `QARep${T}`, label: `QA Rep ${T}`, reportType: "AccountList",
-      folderName: `QARf${T}`, columns: ["ACCOUNT.NAME"] }),
+    args: () => ({ reportName: `QARep${T}`, label: `QA Rep ${T}`, reportType: `QARt${T}`,
+      folderName: `QARf${T}`, columns: ["Name"] }),
     after: () => track("Report", `QARf${T}/QARep${T}`),
   });
   add(8, "sf_create_dashboard", {
-    args: () => ({ fullName: `QARf${T}/QADash${T}`, title: `QA Dash ${T}` }),
+    args: () => ({ fullName: `QADf${T}/QADash${T}`, title: `QA Dash ${T}` }),
   });
-  add(8, "sf_update_dashboard", { args: () => ({ dashboardName: `QARf${T}/QADash${T}`, label: `QA Dash ${T} v2` }) });
+  add(8, "sf_update_dashboard", { args: () => ({ dashboardName: `QADf${T}/QADash${T}`, label: `QA Dash ${T} v2` }) });
 
   // ── PHASE 9 — service cloud / omnichannel. ─────────────────────────────────────────────────
   add(9, "sf_create_service_channel", { args: () => ({ channelName: `QASc${T}`, label: `QA SC ${T}`, relatedObjectApiName: "Case" }) });
@@ -508,7 +510,7 @@ export function buildFixtures(ctx) {
     args: () => ({ articleTypeName: `QAKa${T}__kav`, label: `QA KA ${T}`, pluralLabel: `QA KA ${T}s` }),
     expectUnavailable: true,
   });
-  add(9, "sf_create_entitlement_process", { args: () => ({ fullName: `QAEp${T}`, name: `QA EP ${T}`, SObjectType: "Case" }), expectUnavailable: true });
+  add(9, "sf_create_entitlement_process", { args: () => ({ fullName: `QAEp${T}`, name: `QA EP ${T}`, exitCriteriaFormula: "IsClosed" }), expectUnavailable: true });
   add(9, "sf_create_milestone", { args: () => ({ fullName: `QAMs${T}`, name: `QA MS ${T}` }), expectUnavailable: true });
   add(9, "sf_create_product", { args: () => ({ name: `QA Prod ${T}` }) });
   add(9, "sf_create_price_book", { args: () => ({ name: `QA PB ${T}` }) });

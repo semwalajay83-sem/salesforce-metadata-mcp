@@ -6651,7 +6651,19 @@ export async function upsertRecord(auth: SalesforceAuth, params: Record<string, 
         // client unused in this path
         const encodedValue = encodeURIComponent(String(params.externalIdValue));
         const response = await fetchWithTimeout(`${auth.instanceUrl}/services/data/v${API_VERSION}/sobjects/${params.objectApiName}/${params.externalIdField}/${encodedValue}`, { method: "PATCH", headers: { Authorization: `Bearer ${auth.accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify(params.fields) }, 60_000);
-        if (!response.ok) { const t = await response.text().catch(() => ""); throw new Error(`HTTP ${response.status}: ${t.slice(0, 200)}`); }
+        if (!response.ok) {
+            const t = await response.text().catch(() => "");
+            // A 404 on this path is almost never "no such record" — upsert creates one. It means
+            // Salesforce could not resolve the ENDPOINT: the field does not exist, is not flagged
+            // External ID, or is not visible to the running user. The bare status says none of that.
+            // Added 2026-09-22.
+            if (response.status === 404) {
+                throw new Error(
+                    `HTTP 404 upserting ${params.objectApiName} by '${params.externalIdField}'. Upsert creates the record when it is missing, so this is about the FIELD, not the record: check that '${params.externalIdField}' exists on ${params.objectApiName}, is marked as an External ID, and is visible to the running user's profile. (Salesforce said: ${t.slice(0, 160)})`
+                );
+            }
+            throw new Error(`HTTP ${response.status}: ${t.slice(0, 200)}`);
+        }
         const wasCreated = response.status === 201;
         const data = response.status === 204 ? {} : await response.json().catch(() => ({}));
         return { success: true, fullName: data.id ?? params.externalIdValue, created: wasCreated, wasCreated, message: `Record ${wasCreated ? "created" : "updated"} by ${params.externalIdField}='${params.externalIdValue}'.` };
@@ -8992,7 +9004,10 @@ export async function translateCustomLabel(auth: SalesforceAuth, params: Record<
 
 export async function translateFieldLabel(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
-        const fullName = `${params.language}-${params.objectName}`;
+        // A CustomObjectTranslation is named Object-language ("Account-fr"), not language-Object.
+        // The halves were the wrong way round, so Salesforce read the object name as the language
+        // and answered "You cannot translate into <object>". Fixed 2026-09-22.
+        const fullName = `${params.objectName}-${params.language}`;
         const helpTextXml = params.translatedHelpText ? `<met:help>${x(params.translatedHelpText)}</met:help>` : "";
         // Same merge semantics as Translations above.
         const xml = `<met:metadata xsi:type="met:CustomObjectTranslation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
