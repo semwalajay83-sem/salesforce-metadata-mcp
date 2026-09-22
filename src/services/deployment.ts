@@ -90,7 +90,10 @@ export async function buildStaticResourceZip(resourceName: string, content: stri
   const zip = new JSZip();
   const packageXml = buildPackageXml([{ name: "StaticResource", members: [resourceName] }], apiVersion);
   zip.file("package.xml", packageXml);
-  zip.file(`staticresources/${resourceName}`, content);
+  // The content file must be '<name>.resource' to pair with '<name>.resource-meta.xml'. Without the
+  // extension the content file is orphaned and the deploy fails with "Required field is missing:
+  // content" against the meta file, so no static resource could ever be created. Fixed 2026-09-22.
+  zip.file(`staticresources/${resourceName}.resource`, content);
   zip.file(`staticresources/${resourceName}.resource-meta.xml`,
     buildMetaNsElement("StaticResource", `  <cacheControl>Public</cacheControl>\n  <contentType>${contentType}</contentType>`));
   const buffer = await zip.generateAsync({ type: "nodebuffer" });

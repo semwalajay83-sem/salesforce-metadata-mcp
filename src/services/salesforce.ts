@@ -2330,6 +2330,18 @@ function buildReportTypeXml(params: {
       </met:columns>
       <met:masterLabel>${x(r.label ?? r.joinTable)}</met:masterLabel>
     </met:sections>`).join("\n");
+  // A ReportType must carry at least one section, but sections were only emitted for relationships,
+  // so a report type on a single object — the minimal documented call — always failed with
+  // "Required field is missing: sections". Fall back to one section over the base object.
+  const sectionsXml = relXml.trim() ? relXml : `
+    <met:sections>
+      <met:columns>
+        <met:checkedByDefault>true</met:checkedByDefault>
+        <met:field>Name</met:field>
+        <met:table>${x(params.baseObject)}</met:table>
+      </met:columns>
+      <met:masterLabel>${x(params.baseObject)}</met:masterLabel>
+    </met:sections>`;
   const joinXml = (params.relationships ?? []).map((r) => `
     <met:relationships>
       <met:join>
@@ -2345,7 +2357,7 @@ function buildReportTypeXml(params: {
     <met:category>${x(params.category)}</met:category>
     <met:deployed>${params.deployed}</met:deployed>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
-    ${relXml}
+    ${sectionsXml}
     ${joinXml}
   </met:metadata>`;
 }
@@ -5143,11 +5155,18 @@ export async function createQueueRoutingConfig(auth: SalesforceAuth, params: Rec
         const emailMatch = readResult.rawXml.match(/<email[^>]*>([\s\S]*?)<\/email>/i);
         // Queue WSDL elements: fullName, description, doesIncludeBosses, doesSendEmailToMembers,
         // email, name, queueMembers, queueRoutingConfig, queueSobject. There is no "label".
+        // A Queue upsert REPLACES the queue, and queueSobject was being dropped — Salesforce refused
+        // the result ("Required field is missing: queueSobject"), and an accepted one would have
+        // stripped the queue's supported objects. Carry the existing ones through. Fixed 2026-09-22.
+        const queueSobjectXml = (readResult.rawXml.match(/<queueSobject>[\s\S]*?<\/queueSobject>/gi) ?? [])
+            .map((blk: string) => blk.replace(/<(\/?)(\w+)>/g, "<$1met:$2>"))
+            .join("\n    ");
         const xml = `<met:metadata xsi:type="met:Queue" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     ${emailMatch?.[1] ? `<met:email>${emailMatch[1]}</met:email>` : ""}
     <met:fullName>${x(params.queueDeveloperName)}</met:fullName>
     <met:name>${labelMatch?.[1] ?? params.queueDeveloperName}</met:name>
     <met:queueRoutingConfig>${x(params.routingConfigName)}</met:queueRoutingConfig>
+    ${queueSobjectXml}
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
@@ -7613,8 +7632,30 @@ export async function createLwcJestTest(auth: SalesforceAuth, params: Record<str
         const { default: JSZip } = await import("jszip");
         const zip = new JSZip();
         zip.file("package.xml", pkgXml);
+
+        // A LightningComponentBundle deploy replaces the WHOLE bundle. Shipping only the test file
+        // and a meta file meant the deploy either failed ("No base file for markup://c:<name>") or,
+        // if it had been accepted, would have replaced the component's real source with nothing.
+        // Pull the existing bundle's files from the Tooling API and re-ship them alongside the test.
+        // Fixed 2026-09-22.
+        const client = createClient(auth);
+        const bundleSoql = `SELECT Id FROM LightningComponentBundle WHERE DeveloperName = '${soqlEscape(componentName)}'`;
+        const bundleResp = await client.get<{ records: Array<{ Id: string }> }>(`/tooling/query?q=${encodeURIComponent(bundleSoql)}`);
+        const bundleId = bundleResp.data.records?.[0]?.Id;
+        if (!bundleId) {
+            return { success: false, message: `LWC '${componentName}' not found in the org. Create the component first with sf_create_lwc, then add its Jest test.` };
+        }
+        const resSoql = `SELECT FilePath, Source FROM LightningComponentResource WHERE LightningComponentBundleId = '${soqlEscape(bundleId)}'`;
+        const resResp = await client.get<{ records: Array<{ FilePath: string; Source: string }> }>(`/tooling/query?q=${encodeURIComponent(resSoql)}`);
+        let sawMeta = false;
+        for (const r of resResp.data.records ?? []) {
+            if (!r.FilePath) continue;
+            if (/__tests__/.test(r.FilePath)) continue;           // the new test replaces any old one
+            if (/\.js-meta\.xml$/.test(r.FilePath)) sawMeta = true;
+            zip.file(r.FilePath, r.Source ?? "");
+        }
         zip.file(testPath, params.testContent as string);
-        zip.file(`lwc/${componentName}/${componentName}.js-meta.xml`, metaContent);
+        if (!sawMeta) zip.file(`lwc/${componentName}/${componentName}.js-meta.xml`, metaContent);
         const buf = await zip.generateAsync({ type: "nodebuffer" });
         const { deployZip: dz, pollDeployStatus } = await import("./deployment.js");
         const deployId = await dz(auth, buf.toString("base64"), { checkOnly: false, rollbackOnError: true });
@@ -8341,8 +8382,21 @@ export async function createSamlSsoConfig(auth: SalesforceAuth, params: Record<s
 
 export async function createConnectedAppOAuthPolicy(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
+        // A ConnectedApp upsert REPLACES the app, and label/contactEmail are mandatory. Sending only
+        // fullName + oauthPolicy failed with "Required fields are missing: [MasterLabel]", and an
+        // accepted partial would have wiped the app's own configuration. Read the current app and
+        // carry its identity through. Fixed 2026-09-22.
+        const existing = await readMetadataItem(auth, "ConnectedApp", params.connectedAppName);
+        if (!existing.success) {
+            return { success: false, message: `Connected app '${params.connectedAppName}' not found, so its OAuth policy cannot be updated without overwriting the app. Create it first with sf_create_connected_app.` };
+        }
+        const pick = (tag: string): string => existing.rawXml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "i"))?.[1] ?? "";
+        const label = pick("label") || params.connectedAppName;
+        const contactEmail = pick("contactEmail");
         const xml = `<met:metadata xsi:type="met:ConnectedApp" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.connectedAppName)}</met:fullName>
+    ${contactEmail ? `<met:contactEmail>${contactEmail}</met:contactEmail>` : ""}
+    <met:label>${label}</met:label>
     ${params.singleLogoutUrl ? `<met:oauthConfig><met:singleLogoutUrl>${x(params.singleLogoutUrl)}</met:singleLogoutUrl></met:oauthConfig>` : ""}
     <met:oauthPolicy>
         ${params.ipRelaxation ? `<met:ipRelaxation>${x(params.ipRelaxation)}</met:ipRelaxation>` : ""}
@@ -8583,6 +8637,10 @@ export async function listFlowVersions(auth: SalesforceAuth, params: Record<stri
 
 export async function translateCustomLabel(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
+        // Salesforce MERGES customLabels into the existing Translations component for the language
+        // rather than replacing it — verified live 2026-09-22 (28 entries -> 29 after a single-entry
+        // upsert). So writing just this one entry is correct and does not disturb the others.
+        // qa-translation-merge.mjs pins that behaviour, since the whole tool depends on it.
         const xml = `<met:metadata xsi:type="met:Translations" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.language)}</met:fullName>
     <met:customLabels>
@@ -8600,6 +8658,7 @@ export async function translateFieldLabel(auth: SalesforceAuth, params: Record<s
     try {
         const fullName = `${params.language}-${params.objectName}`;
         const helpTextXml = params.translatedHelpText ? `<met:help>${x(params.translatedHelpText)}</met:help>` : "";
+        // Same merge semantics as Translations above.
         const xml = `<met:metadata xsi:type="met:CustomObjectTranslation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(fullName)}</met:fullName>
     <met:fields>
