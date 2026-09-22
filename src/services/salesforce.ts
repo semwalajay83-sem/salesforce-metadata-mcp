@@ -7105,6 +7105,13 @@ export async function createScheduledFlow(auth: SalesforceAuth, params: Record<s
         <met:timeSource>${x(p.timeSource)}</met:timeSource>
         ${p.connectorTarget ? `<met:connector><met:targetReference>${x(p.connectorTarget)}</met:targetReference></met:connector>` : ""}
     </met:scheduledPaths>`).join("\n");
+        // Scheduled PATHS and the Scheduled TRIGGER TYPE are different features, and Salesforce
+        // rejects them together: "Flows with the trigger type Scheduled can't have scheduled paths."
+        // A scheduled path is a delayed branch of a RECORD-TRIGGERED flow, which is what this tool
+        // builds — it takes an object and a set of paths, and scheduledPaths is a required param, so
+        // there is no schedule-triggered case to preserve. A record-triggered flow also needs
+        // recordTriggerType. Start element XSD order: locationX, locationY, object,
+        // recordTriggerType, scheduledPaths, triggerType. Fixed 2026-09-22.
         const xml = `<met:metadata xsi:type="met:Flow" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.fullName)}</met:fullName>
     <met:label>${x(params.label)}</met:label>
@@ -7116,8 +7123,9 @@ export async function createScheduledFlow(auth: SalesforceAuth, params: Record<s
         <met:locationX>50</met:locationX>
         <met:locationY>0</met:locationY>
         <met:object>${x(params.objectApiName)}</met:object>
-        <met:triggerType>Scheduled</met:triggerType>
+        <met:recordTriggerType>${x(params.recordTriggerType ?? "Create")}</met:recordTriggerType>
         ${paths}
+        <met:triggerType>RecordAfterSave</met:triggerType>
     </met:start>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
@@ -8413,17 +8421,21 @@ export async function createFlexipage(auth: SalesforceAuth, params: Record<strin
 
 export async function createPathAssistant(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
+        // A PathAssistantStep has exactly three members, in this order: fieldNames, info,
+        // picklistValueName. It emitted <infoMessage>, <helpMessage> and a <keyFields> wrapper,
+        // none of which exist on the type ("Element ...infoMessage invalid at this location in type
+        // PathAssistantStep"). The guidance text is <info>; the key fields are plain <fieldNames>
+        // entries. Fixed 2026-09-22.
         const pathItemsXml = (params.pathItems as Array<Record<string, any>>).map(item => {
-            const keyFieldsXml = (item.keyFields ?? []).map((kf: Record<string, any>) => `
-        <met:keyFields>
-            <met:fieldName>${x(String(kf.fieldName))}</met:fieldName>
-        </met:keyFields>`).join("\n");
+            const fieldNamesXml = (item.keyFields ?? [])
+                .map((kf: any) => `        <met:fieldNames>${x(String(kf.fieldName ?? kf))}</met:fieldNames>`)
+                .join("\n");
+            const info = item.infoMessage ?? item.infoTitle;
             return `
     <met:pathAssistantSteps>
+${fieldNamesXml}
+        ${info ? `<met:info>${x(String(info))}</met:info>` : ""}
         <met:picklistValueName>${x(item.picklistValue)}</met:picklistValueName>
-        ${item.infoTitle ? `<met:infoMessage>${x(item.infoTitle)}</met:infoMessage>` : ""}
-        ${item.infoMessage ? `<met:helpMessage>${x(item.infoMessage)}</met:helpMessage>` : ""}
-        ${keyFieldsXml}
     </met:pathAssistantSteps>`;
         }).join("\n");
         // PathAssistant is named by the path alone, not Object.Field.Path. Its display name is

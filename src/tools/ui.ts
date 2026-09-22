@@ -245,18 +245,30 @@ export function registerUiTools(server: McpServer): void {
           <met:columnSpan>${c.columnSpan}</met:columnSpan>
           <met:rowSpan>${c.rowSpan}</met:rowSpan>
         </met:components>`).join("\n");
+      // A dashboard must declare its columns: Salesforce refuses one without them ("Required field
+      // is missing: LeftSection or RightSection"), and components live INSIDE a section rather than
+      // at the top level. updateDashboard in the service layer already emitted both sections and
+      // dashboardType; this inline builder did not, so sf_create_dashboard could never succeed.
+      // Element order follows the Dashboard XSD, which is alphabetical. Fixed 2026-09-22.
       const xml = `<met:metadata xsi:type="met:Dashboard" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
         <met:fullName>${x(params.fullName)}</met:fullName>
-        <met:title>${x(params.title)}</met:title>
-        ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
-        ${params.runningUser ? `<met:runningUser>${x(params.runningUser)}</met:runningUser>` : ""}
         <met:backgroundEndColor>#FFFFFF</met:backgroundEndColor>
         <met:backgroundFadeDirection>Diagonal</met:backgroundFadeDirection>
         <met:backgroundStartColor>#FFFFFF</met:backgroundStartColor>
+        <met:dashboardType>SpecifiedUser</met:dashboardType>
+        ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+        <met:leftSection>
+          ${componentsXml}
+          <met:columnSize>Medium</met:columnSize>
+        </met:leftSection>
+        <met:rightSection>
+          <met:columnSize>Medium</met:columnSize>
+        </met:rightSection>
+        ${params.runningUser ? `<met:runningUser>${x(params.runningUser)}</met:runningUser>` : ""}
         <met:textColor>#000000</met:textColor>
+        <met:title>${x(params.title)}</met:title>
         <met:titleColor>#000000</met:titleColor>
         <met:titleSize>12</met:titleSize>
-        ${componentsXml}
       </met:metadata>`;
       const { upsertMetadata } = await import("../services/salesforce.js");
       const result = await upsertMetadata(auth, xml);

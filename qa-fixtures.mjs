@@ -483,7 +483,7 @@ export function buildFixtures(ctx) {
   add(8, "sf_share_report_folder", { args: () => ({ folderName: `QARf${T}`, shareWith: [{ type: "Group", name: "AllInternalUsers", accessLevel: "View" }] }) });
   add(8, "sf_create_report", {
     args: () => ({ reportName: `QARep${T}`, label: `QA Rep ${T}`, reportType: `QARt${T}`,
-      folderName: `QARf${T}`, columns: ["Name"] }),
+      folderName: `QARf${T}`, columns: [`${OBJ}.Name`] }),
     after: () => track("Report", `QARf${T}/QARep${T}`),
   });
   add(8, "sf_create_dashboard", {
@@ -543,7 +543,7 @@ export function buildFixtures(ctx) {
     ["sf_update_integration_procedure", () => ({ procedureName: `QAIp${T}`, subType: `Sub${T}` })],
     ["sf_get_integration_procedure", () => ({ procedureName: `QAIp${T}`, subType: `Sub${T}` })],
     ["sf_activate_integration_procedure", () => ({ procedureName: `QAIp${T}`, subType: `Sub${T}` })],
-    ["sf_create_calculation_matrix", () => ({ matrixName: `QACm${T}`, label: `QA CM ${T}`, inputVariables: [{ name: "a", dataType: "Text" }], outputVariables: [{ name: "b", dataType: "Text" }] })],
+    ["sf_create_calculation_matrix", () => ({ matrixName: `QACm${T}`, label: `QA CM ${T}`, inputVariables: [{ name: "a", dataType: "String" }], outputVariables: [{ name: "b", dataType: "String" }] })],
     ["sf_create_calculation_procedure", () => ({ procedureName: `QACpr${T}`, label: `QA CPR ${T}` })],
     ["sf_export_omnistudio_component", () => ({ componentType: "FlexCard", componentName: `QAFc${T}` })],
     ["sf_import_omnistudio_component", () => ({ componentType: "FlexCard", newName: `QAFc2${T}`, jsonDefinition: "{}" })],
