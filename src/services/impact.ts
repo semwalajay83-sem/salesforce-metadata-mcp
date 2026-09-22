@@ -139,7 +139,18 @@ export async function resolveComponentId(
   if (type === "CustomObject") {
     const objectApiName = assertApiName(componentName, "Object API name");
     const id = await resolveCustomObjectId(auth, objectApiName);
-    if (!id) throw new Error(`Custom object '${objectApiName}' not found.`);
+    if (!id) {
+      // A standard object exists but has no Tooling CustomObject row, so "not found" is misleading
+      // here — it reads as "no such object" and sends the caller chasing a typo that isn't there.
+      if (!/__(c|mdt|e|b|x)$/i.test(objectApiName)) {
+        throw new Error(
+          `'${objectApiName}' is a standard object, so it has no CustomObject record to resolve. ` +
+          `Dependency analysis covers custom components only — pass a custom object (__c), or a ` +
+          `specific custom field on this object as CustomField 'Object.Field__c'.`
+        );
+      }
+      throw new Error(`Custom object '${objectApiName}' not found.`);
+    }
     return { id, type, name: objectApiName, objectApiName };
   }
 
