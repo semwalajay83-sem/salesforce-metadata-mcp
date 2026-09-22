@@ -140,7 +140,7 @@ export function buildFixtures(ctx) {
   });
   add(2, "sf_create_global_value_set", {
     args: () => ({ fullName: `QAGvs${T}__gvs`, masterLabel: `QA GVS ${T}`, values: ["One", "Two"] }),
-    after: () => track("GlobalValueSet", `QAGvs${T}__gvs`),
+    after: () => track("GlobalValueSet", `QAGvs${T}`),
   });
   add(2, "sf_create_business_process", {
     args: () => ({ objectName: "Case", processName: `QABp${T}`, label: `QA BP ${T}`, values: ["New", "Closed"] }),

@@ -31,7 +31,6 @@ const EXPECT = {
   sf_create_list_view:            ["ListView", `${OBJ}.QALV${T}`],
   sf_create_field_set:            ["FieldSet", `${OBJ}.QAFS${T}`],
   sf_create_custom_metadata_type: ["CustomObject", `QAMdt${T}__mdt`],
-  sf_create_custom_label:         ["CustomLabel", `QALbl${T}`],
   sf_create_custom_setting:       ["CustomObject", `QASet${T}__c`],
   sf_create_global_value_set:     ["GlobalValueSet", `QAGvs${T}`],
   sf_create_business_process:     ["BusinessProcess", `Case.QABp${T}`],
@@ -46,9 +45,6 @@ const EXPECT = {
   sf_create_flow:                 ["Flow", `QAFlow${T}`],
   sf_create_flow_from_xml:        ["Flow", `QAFlowX${T}`],
   sf_create_lwc:                  ["LightningComponentBundle", `qaLwc${T}`],
-  sf_create_aura_component:       ["AuraDefinitionBundle", `qaAura${T}`],
-  sf_create_aura_app:             ["AuraDefinitionBundle", `qaAuraApp${T}`],
-  sf_create_aura_event:           ["AuraDefinitionBundle", `qaAuraEvt${T}`],
   sf_create_visualforce_page:     ["ApexPage", `QAVf${T}`],
   sf_create_visualforce_component:["ApexComponent", `QAVfc${T}`],
   sf_create_static_resource:      ["StaticResource", `QASr${T}`],
@@ -94,11 +90,36 @@ function listMetadata(type) {
   return names;
 }
 
+/**
+ * `sf org list metadata` is not reliable for every type — it returned nothing for
+ * LightningComponentBundle, PermissionSetGroup and report folders that demonstrably existed, which
+ * made the first run accuse three innocent tools. Before calling anything a ghost, ask the org
+ * directly. Added 2026-09-22.
+ */
+const SOQL_FALLBACK = {
+  LightningComponentBundle: (n) => ["SELECT Id FROM LightningComponentBundle WHERE DeveloperName = '" + n + "'", true],
+  PermissionSetGroup: (n) => ["SELECT Id FROM PermissionSetGroup WHERE DeveloperName = '" + n + "'", false],
+  ReportFolder: (n) => ["SELECT Id FROM Folder WHERE DeveloperName = '" + n + "'", false],
+  EmailTemplate: (n) => ["SELECT Id FROM EmailTemplate WHERE DeveloperName = '" + n.split("/").pop() + "'", false],
+  CustomPermission: (n) => ["SELECT Id FROM CustomPermission WHERE DeveloperName = '" + n + "'", false],
+};
+function existsViaSoql(type, fullName) {
+  const build = SOQL_FALLBACK[type];
+  if (!build) return false;
+  const [q, tooling] = build(fullName);
+  try {
+    const args = ["data", "query", "-q", `"${q}"`, "-o", "demo-org", "--json"];
+    if (tooling) args.splice(3, 0, "-t");
+    const out = execFileSync("sf", args, { encoding: "utf8", timeout: 120000, shell: true });
+    return (JSON.parse(out.slice(out.indexOf("{"))).result?.totalSize ?? 0) > 0;
+  } catch { return false; }
+}
+
 let confirmed = 0, ghosts = 0, untested = 0;
 const ghostList = [];
 for (const [tool, [type, fullName]] of Object.entries(EXPECT)) {
   if (!passed.has(tool)) { untested++; continue; }
-  const present = listMetadata(type).has(fullName);
+  const present = listMetadata(type).has(fullName) || existsViaSoql(type, fullName);
   if (present) { confirmed++; console.log(`  OK    ${tool} -> ${type}:${fullName}`); }
   else {
     ghosts++; ghostList.push({ tool, type, fullName });

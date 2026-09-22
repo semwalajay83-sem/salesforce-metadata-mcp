@@ -489,8 +489,12 @@ export const CreateCustomSettingSchema = z.object({
 }).strict();
 
 export const CreateGlobalValueSetSchema = z.object({
+  // Salesforce REQUIRES the '__gvs' suffix on input ("fullName must end with: __gvs") but then
+  // reports the component without it — `listMetadata` returns 'Industry_Types' for a value set
+  // deployed as 'Industry_Types__gvs'. That asymmetry is Salesforce's, not ours; the suffix is
+  // mandatory here for good reason. Confirmed live 2026-09-22 by trying it without.
   fullName: z.string().min(1).regex(/^[A-Za-z][A-Za-z0-9_]*__gvs$/, "Must end with __gvs, e.g. 'Industry_Types__gvs'")
-    .describe("API name of the global value set, e.g. 'Industry_Types__gvs'"),
+    .describe("API name of the global value set, e.g. 'Industry_Types__gvs'. Salesforce stores it without the suffix, so it is listed later as 'Industry_Types'."),
   masterLabel: z.string().min(1).describe("Label for the global value set"),
   description: z.string().optional().describe("Description"),
   sorted: z.boolean().default(false).describe("Auto-sort values alphabetically"),
