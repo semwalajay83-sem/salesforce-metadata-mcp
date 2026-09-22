@@ -142,10 +142,18 @@ const rec = back.records?.[0];
 check("the record exists in the org", rec?.Name === ACCT, rec?.Name);
 check("the Apex actually ran and updated it", rec?.AccountNumber === STAMP, `AccountNumber=${rec?.AccountNumber}`);
 
-const all = await viaProxy("sf_query_records", {
-  query: `SELECT Id, Name FROM Account WHERE AccountNumber = '${STAMP}'`,
-  limit: 50,
-});
+// sf_bulk_insert_records SUBMITS an async Bulk API job, so the two bulk rows are not
+// queryable the instant it returns. Poll until they land rather than asserting immediately —
+// asserting too early both failed spuriously and left the rows behind for cleanup to miss.
+let all = { records: [] };
+for (let attempt = 0; attempt < 20; attempt++) {
+  all = await viaProxy("sf_query_records", {
+    query: `SELECT Id, Name FROM Account WHERE AccountNumber = '${STAMP}'`,
+    limit: 50,
+  });
+  if ((all.records?.length ?? 0) >= 3) break;
+  await new Promise((r) => setTimeout(r, 1500));
+}
 check("all 3 records (1 single + 2 bulk) are in the org", (all.records?.length ?? 0) === 3, `${all.records?.length} found`);
 
 console.log("\n5. THE CLIENT NEVER REFRESHED — proving the fix does not depend on it");
@@ -156,11 +164,15 @@ check("write tools are STILL invisible, yet were all callable", !canSee("sf_crea
 
 console.log("\n6. CLEANUP");
 let deleted = 0;
-for (const r of all.records ?? []) {
+const toDelete = await viaProxy("sf_query_records", {
+  query: `SELECT Id FROM Account WHERE AccountNumber = '${STAMP}'`,
+  limit: 50,
+});
+for (const r of toDelete.records ?? []) {
   const d = await viaProxy("sf_delete_record", { objectApiName: "Account", recordId: r.Id });
   if (d.success === true) deleted++;
 }
-check("every probe record deleted", deleted === (all.records?.length ?? 0), `${deleted} deleted`);
+check("every probe record deleted", deleted === (toDelete.records?.length ?? 0), `${deleted} deleted`);
 const leftover = await viaProxy("sf_query_records", {
   query: `SELECT Id FROM Account WHERE AccountNumber = '${STAMP}'`,
   limit: 50,
