@@ -2521,7 +2521,7 @@ function buildSharingRuleXml(params: {
   return `<met:metadata xsi:type="met:SharingRules" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.objectName)}</met:fullName>
     <met:${ruleTag}>
-      <met:fullName>${x(params.objectName)}.${x(params.ruleName)}</met:fullName>
+      <met:fullName>${x(params.ruleName)}</met:fullName>
       <met:accessLevel>${x(params.accessLevel)}</met:accessLevel>
       ${accountSettingsXml}
       ${criteriaXml}

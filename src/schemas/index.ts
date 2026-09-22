@@ -2011,7 +2011,10 @@ export const CreateChatButtonSchema = z.object({
     .describe("How chats are routed. Omni uses Omni-Channel routing; Choice offers the chat to the button's agents."),
   queueName: z.string().optional().describe("Queue DeveloperName for queue-based routing"),
   botName: z.string().optional().describe("Bot name for bot-first routing"),
-  windowLanguage: z.string().default("en").describe("Chat window language code, e.g. 'en', 'fr', 'de'"),
+  // LanguageEnum wants a full locale: "en" is rejected, "en_US" is accepted. The default made
+  // every chat button fail with "'en' is not a valid value for the enum 'LanguageEnum'".
+  // Fixed 2026-09-22.
+  windowLanguage: z.string().default("en_US").describe("Chat window language, e.g. 'en_US', 'fr', 'de_DE'"),
   inviteRenderer: z.string().optional().describe("Custom invite Visualforce page/LWC component name"),
   customAgentName: z.string().optional().describe("Agent display name shown in chat window"),
   optionsHasTimeoutAlert: z.boolean().default(false),
