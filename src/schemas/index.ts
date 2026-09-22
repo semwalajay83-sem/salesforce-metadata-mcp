@@ -11,11 +11,29 @@ export const PicklistValueSchema = z.object({
   description: z.string().max(1000).optional().describe("Optional description for the value"),
 });
 
+/**
+ * A picklist value given as a bare string — `["Draft", "Open"]`, the obvious way to call these
+ * tools — used to be a hard zod rejection demanding `{fullName, label, default}` objects, even
+ * though `picklistValues` elsewhere in this file is already a plain `z.array(z.string())`. Same
+ * class of bug as FlowLiteralValueSchema below: the natural call failed for no reason the caller
+ * could see. Coerce the string form instead; the rich form still works when colour/default/
+ * description actually matter. Found 2026-09-22 by qa-full-sweep.mjs.
+ */
+export const PicklistValueInput = z
+  .union([z.string().min(1).max(255), PicklistValueSchema])
+  .describe("Either 'Value' or { fullName, label, ... }")
+  .transform((v) => (typeof v === "string" ? { fullName: v, label: v, default: false } : v));
+
 export const ValueSetSchema = z.object({
   restricted: z.boolean().default(false).describe("If true, only values in the list are allowed"),
   sorted: z.boolean().default(false).describe("Whether values are auto-sorted alphabetically"),
-  values: z.array(PicklistValueSchema).min(1).describe("List of picklist values"),
+  values: z.array(PicklistValueInput).min(1).describe("List of picklist values"),
 });
+
+/** Accepts the full value-set object, or just the list of values when the defaults are fine. */
+export const ValueSetInput = z
+  .union([z.array(PicklistValueInput).min(1), ValueSetSchema])
+  .transform((v) => (Array.isArray(v) ? { restricted: false, sorted: false, values: v } : v));
 
 // ─── Create Custom Object ─────────────────────────────────────────────────────
 
@@ -122,8 +140,9 @@ export const CreateCustomFieldSchema = z
       .max(17)
       .optional()
       .describe("Decimal places for Number/Currency/Percent (0–17)"),
-    picklistValues: ValueSetSchema.optional().describe(
-      "Picklist configuration. Required for Picklist / MultiselectPicklist types."
+    picklistValues: ValueSetInput.optional().describe(
+      "Picklist values. Either a plain list (['Draft','Open']) or the full " +
+      "{ restricted, sorted, values } object. Required for Picklist / MultiselectPicklist types."
     ),
     referenceTo: z
       .string()
@@ -157,7 +176,7 @@ export const AddPicklistValuesSchema = z.object({
     .regex(/^[A-Za-z][A-Za-z0-9_]*\.[A-Za-z][A-Za-z0-9_]*__c$/, "Must be 'ObjectName__c.FieldName__c' or 'StandardObject.FieldName__c'")
     .describe("Full API name of the picklist field, e.g. 'Invoice__c.Status__c'"),
   values: z
-    .array(PicklistValueSchema)
+    .array(PicklistValueInput)
     .min(1)
     .describe("New picklist values to add (existing values are preserved)"),
 }).strict();
@@ -475,7 +494,7 @@ export const CreateGlobalValueSetSchema = z.object({
   masterLabel: z.string().min(1).describe("Label for the global value set"),
   description: z.string().optional().describe("Description"),
   sorted: z.boolean().default(false).describe("Auto-sort values alphabetically"),
-  values: z.array(PicklistValueSchema).min(1).describe("Picklist values"),
+  values: z.array(PicklistValueInput).min(1).describe("Picklist values"),
 }).strict();
 
 export const CreateRecordTypeSchema = z.object({

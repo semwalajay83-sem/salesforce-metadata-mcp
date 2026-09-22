@@ -2232,13 +2232,15 @@ function buildCompactLayoutXml(params: {
   objectName: string; fullName: string; label: string; fields: string[];
 }): string {
   const fieldsXml = params.fields.map(f => `<met:fields>${x(f)}</met:fields>`).join("\n");
-  return `<met:metadata xsi:type="met:CustomObject" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <met:fullName>${x(params.objectName)}</met:fullName>
-    <met:compactLayouts>
-      <met:fullName>${x(params.fullName)}</met:fullName>
-      <met:label>${x(params.label)}</met:label>
-      ${fieldsXml}
-    </met:compactLayouts>
+  // Address the CompactLayout directly as 'Object.Layout' rather than wrapping it in a CustomObject
+  // upsert. A CustomObject upsert replaces the object's own definition, so the partial payload was
+  // rejected outright ("Must specify a non-empty label for the CustomObject") — and had Salesforce
+  // accepted it, it would have overwritten the object's definition with a near-empty one. Same
+  // child-addressing shape buildValidationRuleXml has always used. Fixed 2026-09-22.
+  return `<met:metadata xsi:type="met:CompactLayout" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <met:fullName>${x(params.objectName)}.${x(params.fullName)}</met:fullName>
+    <met:label>${x(params.label)}</met:label>
+    ${fieldsXml}
   </met:metadata>`;
 }
 
@@ -2262,17 +2264,17 @@ function buildListViewXml(params: {
     </met:sharedTo>` : `<met:sharedTo><met:allInternalUsers></met:allInternalUsers></met:sharedTo>`;
   // ListView is an XSD sequence: fullName, booleanFilter, columns, division, filterScope,
   // filters, label, language, queue, sharedTo. 'allUsers' is not a SharedTo member.
-  return `<met:metadata xsi:type="met:CustomObject" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <met:fullName>${x(params.objectName)}</met:fullName>
-    <met:listViews>
-      <met:fullName>${x(params.fullName)}</met:fullName>
-      ${params.booleanFilter ? `<met:booleanFilter>${x(params.booleanFilter)}</met:booleanFilter>` : ""}
-      ${colsXml}
-      <met:filterScope>${x(params.filterScope)}</met:filterScope>
-      ${filtersXml}
-      <met:label>${x(params.label)}</met:label>
-      ${sharedToXml}
-    </met:listViews>
+  // Addressed directly as 'Object.ListView' for the same reason as CompactLayout above: the old
+  // CustomObject wrapper made this a partial replace of the object's definition, which Salesforce
+  // rejected ("Must specify a non-empty label for the CustomObject"). Fixed 2026-09-22.
+  return `<met:metadata xsi:type="met:ListView" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <met:fullName>${x(params.objectName)}.${x(params.fullName)}</met:fullName>
+    ${params.booleanFilter ? `<met:booleanFilter>${x(params.booleanFilter)}</met:booleanFilter>` : ""}
+    ${colsXml}
+    <met:filterScope>${x(params.filterScope)}</met:filterScope>
+    ${filtersXml}
+    <met:label>${x(params.label)}</met:label>
+    ${sharedToXml}
   </met:metadata>`;
 }
 
@@ -2553,7 +2555,13 @@ function buildPageLayoutXml(params: {
   sections?: Array<{ label: string; style: string; fields: string[] }>;
   relatedLists?: string[];
 }): string {
-  const sectionsXml = (params.sections ?? []).map(s => {
+  // `sections` is optional in the schema, but Salesforce refuses a layout with none ("Layout must
+  // have at least 1 section"), so the minimal documented call could never succeed. Fall back to a
+  // single standard section rather than sending a layout the API is guaranteed to reject.
+  const sections = params.sections?.length
+    ? params.sections
+    : [{ label: "Information", style: "OneColumn", fields: ["Name"] }];
+  const sectionsXml = sections.map(s => {
     const isTwoCol = s.style !== "OneColumn";
     const makeItem = (f: string) => `<met:layoutItems><met:behavior>${f === "Name" ? "Required" : "Edit"}</met:behavior><met:field>${x(f)}</met:field></met:layoutItems>`;
     let colsXml: string;
@@ -6862,13 +6870,29 @@ export async function createSearchLayout(auth: SalesforceAuth, params: Record<st
             `<met:lookupDialogsAdditionalFields>${x(f)}</met:lookupDialogsAdditionalFields>`).join("\n");
         const lfFields = (params.lookupFilterFields ?? []).map((f: string) =>
             `<met:lookupFilterFields>${x(f)}</met:lookupFilterFields>`).join("\n");
+        // searchLayouts is a child of CustomObject with no standalone metadata type, so it can only
+        // be written through the object. Sending just fullName + searchLayouts made that a PARTIAL
+        // object definition: Salesforce refused it outright ("Must specify a non-empty label for the
+        // CustomObject"), and an accepted partial would have replaced the object's real definition.
+        // Read the current definition first and write it back with the new search layouts merged in,
+        // the same read-modify-write enableObjectFeatures uses. Fixed 2026-09-22.
+        const readXml = await callMetadataSoap(
+            auth, "readMetadata",
+            `<met:readMetadata><met:type>CustomObject</met:type><met:fullNames>${x(params.objectName)}</met:fullNames></met:readMetadata>`
+        );
+        const recordMatch = readXml.match(/<records[^>]*>([\s\S]*?)<\/records>/i);
+        if (!recordMatch) {
+            return { success: false, message: `Object '${params.objectName}' could not be read, so its search layout cannot be updated without overwriting the rest of the object definition. Check the API name.` };
+        }
+        // drop any existing searchLayouts block; the new one replaces it wholesale
+        const inner = recordMatch[1].replace(/<searchLayouts>[\s\S]*?<\/searchLayouts>/gi, "").trim();
         const xml = `<met:metadata xsi:type="met:CustomObject" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <met:fullName>${x(params.objectName)}</met:fullName>
-    <met:searchLayouts>
-        ${srFields}
-        ${ldFields}
-        ${lfFields}
-    </met:searchLayouts>
+    ${inner}
+    <searchLayouts>
+        ${srFields.replace(/met:/g, "")}
+        ${ldFields.replace(/met:/g, "")}
+        ${lfFields.replace(/met:/g, "")}
+    </searchLayouts>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
@@ -6879,10 +6903,16 @@ export async function createSearchLayout(auth: SalesforceAuth, params: Record<st
 export async function assignLayoutToRecordType(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const profileNames: string[] = params.profileNames ?? ["Admin"];
+        // A Layout's fullName is 'Object-LayoutName'. The bare layout name was being sent, so every
+        // assignment failed with "no Layout named X found" — note the recordType on the very next
+        // line was already being qualified correctly. Accept either form from the caller.
+        const layoutFullName = String(params.layoutName).includes("-")
+            ? String(params.layoutName)
+            : `${params.objectName}-${params.layoutName}`;
         // Profile uses <layoutAssignments> with <layout>, not <recordTypeToLayoutMappings>.
         // One assignment per call; a Profile upsert targets a single profile.
         const mappings = `<met:layoutAssignments>
-            <met:layout>${x(params.layoutName)}</met:layout>
+            <met:layout>${x(layoutFullName)}</met:layout>
             <met:recordType>${x(params.objectName)}.${x(params.recordTypeName)}</met:recordType>
         </met:layoutAssignments>`;
         const xml = `<met:metadata xsi:type="met:Profile" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
@@ -7241,7 +7271,7 @@ export async function createExtIdField(auth: SalesforceAuth, params: Record<stri
     <met:type>${x(params.type)}</met:type>
     <met:externalId>true</met:externalId>
     <met:unique>true</met:unique>
-    ${params.length ? `<met:length>${params.length}</met:length>` : ""}
+    ${params.type === "Text" ? `<met:length>${params.length ?? 80}</met:length>` : (params.length ? `<met:length>${params.length}</met:length>` : "")}
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
@@ -8050,12 +8080,11 @@ export async function createCustomButton(auth: SalesforceAuth, params: Record<st
 export async function createFieldSet(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const fullName = `${params.objectName}.${params.fieldSetName}`;
+        // A field set field belongs to exactly one of availableFields / displayedFields. Emitting
+        // each field into BOTH made Salesforce reject every call with "Duplicate field(X) in
+        // Fieldset". `fields` is what the caller wants shown, so it maps to displayedFields only;
+        // availableFields comes from the separate param. Fixed 2026-09-22.
         const fieldsXml = (params.fields as string[]).map(f => `
-    <met:availableFields>
-        <met:field>${x(f)}</met:field>
-        <met:isFieldManaged>false</met:isFieldManaged>
-        <met:isRequired>false</met:isRequired>
-    </met:availableFields>
     <met:displayedFields>
         <met:field>${x(f)}</met:field>
         <met:isFieldManaged>false</met:isFieldManaged>
@@ -8070,7 +8099,7 @@ export async function createFieldSet(auth: SalesforceAuth, params: Record<string
         const xml = `<met:metadata xsi:type="met:FieldSet" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(fullName)}</met:fullName>
     <met:label>${x(params.label)}</met:label>
-    ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+    <met:description>${x(params.description ?? params.label)}</met:description>
     ${fieldsXml}
     ${extraAvailableXml}
 </met:metadata>`;
