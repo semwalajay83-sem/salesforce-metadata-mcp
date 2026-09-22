@@ -5416,12 +5416,34 @@ export async function createMessagingChannel(auth: SalesforceAuth, params: Recor
     try {
         // MessagingChannel WSDL: messagingChannelType (not channelType), platformKey (not
         // messagingPlatformKey); isActive and pageId are not elements of this type.
+        //
+        // sessionHandlerType is mandatory and accepts only Flow or Queue — measured against a real
+        // org 2026-09-22; "Default", "Omni", "Bot" and "Standard" are all rejected. Each handler
+        // needs its routing target, so Salesforce otherwise answers "Missing required routing
+        // flow/queue" with no indication of which parameter to set. Fixed 2026-09-22.
+        // sessionHandlerType is mandatory and accepts ONLY Flow or Queue — measured against a real
+        // org 2026-09-22; "Default", "Omni", "Bot" and "Standard" are all rejected.
+        //
+        // Salesforce then wants a routing target ("Missing required routing queue"/"...flow"), and
+        // the element that carries it is NOT routingQueue/routingFlow — both are rejected as invalid
+        // on this type, so the real name is still unknown. Digital Engagement is not licensed in the
+        // org this was measured against, so it could not be determined by experiment. Sending a
+        // guessed element turns Salesforce's clear "Missing required routing queue" into an opaque
+        // XSD error, so the guess is deliberately NOT sent: the caller gets the message that names
+        // what is missing, and configures routing in Setup.
+        const handlerType = params.sessionHandlerType
+            ?? (params.routingFlowName ? "Flow" : "Queue");
+        // MessagingChannel XSD sequence is alphabetical: description, masterLabel,
+        // messagingChannelType, platformKey, routingFlow/routingQueue, sessionHandlerType. The
+        // elements were emitted in a different order, which is what "Element ...routingQueue invalid
+        // at this location" means.
         const xml = `<met:metadata xsi:type="met:MessagingChannel" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <met:messagingChannelType>${x(params.channelType)}</met:messagingChannelType>
-    ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
     <met:fullName>${x(params.channelName)}</met:fullName>
+    ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
     <met:masterLabel>${x(params.label)}</met:masterLabel>
+    <met:messagingChannelType>${x(params.channelType)}</met:messagingChannelType>
     ${params.phoneNumber ? `<met:platformKey>${x(params.phoneNumber)}</met:platformKey>` : ""}
+    <met:sessionHandlerType>${x(handlerType)}</met:sessionHandlerType>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
@@ -7116,7 +7138,7 @@ export async function createScheduledFlow(auth: SalesforceAuth, params: Record<s
     <met:fullName>${x(params.fullName)}</met:fullName>
     <met:label>${x(params.label)}</met:label>
     <met:apiVersion>${API_VERSION}</met:apiVersion>
-    <met:status>Active</met:status>
+    <met:status>${x(params.status ?? "Draft")}</met:status>
     <met:processType>AutoLaunchedFlow</met:processType>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
     <met:start>
@@ -8451,7 +8473,7 @@ ${fieldNamesXml}
     <met:fieldName>${x(params.fieldName)}</met:fieldName>
     <met:masterLabel>${x(params.label)}</met:masterLabel>
     ${pathItemsXml}
-    ${params.recordTypeName ? `<met:recordTypeName>${x(params.recordTypeName)}</met:recordTypeName>` : ""}
+    <met:recordTypeName>${x(params.recordTypeName ?? "Master")}</met:recordTypeName>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {

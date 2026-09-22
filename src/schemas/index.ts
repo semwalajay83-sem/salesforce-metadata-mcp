@@ -1979,7 +1979,19 @@ export const CreateWorkTypeSchema = z.object({
 export const CreateMessagingChannelSchema = z.object({
   channelName: z.string().min(1).max(80).describe("API name / MasterLabel for the Messaging Channel"),
   label: z.string().min(1).max(255),
-  channelType: z.enum(["SMS","WhatsApp","Facebook","AppleMessages","GoogleBusinessMessages","LINE","Voice","EmbeddedMessaging"]),
+  // Measured against a real org 2026-09-22 (probe-enum.mjs): MessagingChannelType accepts
+  // Text, WhatsApp, Facebook, Line, Voice, EmbeddedMessaging, Custom. This enum offered "SMS",
+  // "LINE", "AppleMessages" and "GoogleBusinessMessages", none of which the API accepts — SMS is
+  // spelled "Text" and LINE is "Line". The first two are kept as aliases since the intent is
+  // unmistakable; the other two had no valid equivalent and never worked.
+  channelType: z.enum(["Text","WhatsApp","Facebook","Line","Voice","EmbeddedMessaging","Custom","SMS","LINE"])
+    .transform((v) => (v === "SMS" ? "Text" : v === "LINE" ? "Line" : v))
+    .describe("Channel type. Use 'Text' for SMS ('SMS' is accepted as an alias)."),
+  // Measured the same way: MessagingSessionHandlerType accepts only Flow and Queue, and each needs
+  // its routing target ("Missing required routing flow" / "...routing queue").
+  sessionHandlerType: z.enum(["Queue", "Flow"]).optional()
+    .describe("How sessions are handled: Queue routes to a queue, Flow to a routing flow. Defaults from routingType."),
+  routingFlowName: z.string().optional().describe("Routing flow API name. Required when sessionHandlerType is 'Flow'."),
   phoneNumber: z.string().optional().describe("Phone number for SMS/WhatsApp channels"),
   pageId: z.string().optional().describe("Facebook Page ID for Facebook Messenger"),
   routingType: z.enum(["Queue","Bot","None"]).default("Queue"),
@@ -2622,6 +2634,10 @@ export const CreateCustomWebTabSchema = z.object({
 
 export const CreateScheduledFlowSchema = z.object({
   fullName: z.string().min(1).max(80).regex(/^[A-Za-z][A-Za-z0-9_]*$/).describe("Flow API name, e.g. 'Nightly_Account_Update'"),
+  // A flow whose Start connects to nothing cannot be activated ("The flow can't run because
+  // nothing is connected to the Start element"), and this tool creates the trigger and its
+  // paths, not the body — so it deploys as a draft unless the caller asks otherwise.
+  status: z.enum(["Draft", "Active"]).default("Draft").describe("Deploy as Draft or Active. Activation needs the flow to have elements connected to Start."),
   label: z.string().min(1).describe("Flow display label"),
   objectApiName: z.string().min(1).describe("Object API name to process records from, e.g. 'Account'"),
   scheduledPaths: z.array(z.object({

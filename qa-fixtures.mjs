@@ -502,7 +502,7 @@ export function buildFixtures(ctx) {
   add(9, "sf_assign_skill_to_agent", { args: () => ({ skillName: `QASk${T}`, username: ctx.vals.username }) });
   add(9, "sf_create_service_territory", { args: () => ({ territoryName: `QASt${T}`, label: `QA ST ${T}` }), expectUnavailable: true });
   add(9, "sf_create_work_type", { args: () => ({ workTypeName: `QAWt${T}`, label: `QA WT ${T}`, estimatedDuration: 30 }), expectUnavailable: true });
-  add(9, "sf_create_messaging_channel", { args: () => ({ channelName: `QAMc${T}`, label: `QA MC ${T}`, channelType: "SMS" }), expectUnavailable: true });
+  add(9, "sf_create_messaging_channel", { args: () => ({ channelName: `QAMc${T}`, label: `QA MC ${T}`, channelType: "Text", queueName: `QAQueue${T}` }), expectUnavailable: true });
   add(9, "sf_create_chat_button", { args: () => ({ buttonName: `QACb${T}`, label: `QA CB ${T}` }), expectUnavailable: true });
   add(9, "sf_create_embedded_service", { args: () => ({ label: `QA ES ${T}`, site: `QASite${T}` }), expectUnavailable: true });
   add(9, "sf_create_bot_routing", { args: () => ({ botName: `QABot${T}`, transferToQueueName: `QAQueue${T}` }), expectUnavailable: true });
