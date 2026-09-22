@@ -2995,7 +2995,8 @@ export const CreateQuickActionSchema = z.object({
   actionName: z.string().min(1).max(80).regex(/^[A-Za-z][A-Za-z0-9_]*$/).describe("Quick action API name"),
   label: z.string().min(1).max(255).describe("Display label for the quick action"),
   actionType: z.enum(["Create", "Update", "LogACall", "SendEmail"]).describe("Type of quick action"),
-  targetObject: z.string().optional().describe("Target object API name (required for Create type)"),
+  targetObject: z.string().optional().describe("Target object API name. Required for Create type."),
+  targetParentField: z.string().optional().describe("Lookup field on the target object pointing back to objectName. Required for Create type."),
   description: z.string().max(1000).optional().describe("Description of the quick action"),
   fields: z.array(z.object({
     name: z.string().min(1).describe("Field API name"),

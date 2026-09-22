@@ -8139,12 +8139,18 @@ function buildQuickActionLayoutXml(fields: string[]): string {
 export async function createQuickAction(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const fullName = `${params.objectName}.${params.actionName}`;
-        // A Create action must name the object it creates. The schema documents targetObject as
-        // "required for Create type" but leaves it optional, so the minimal call failed with
-        // Salesforce's "Required fields are missing: [TargetSobjectType]". On an object-scoped
-        // action the sensible default is the object the action lives on. Fixed 2026-09-22.
-        if (params.actionType === "Create" && !params.targetObject) {
-            params = { ...params, targetObject: params.objectName };
+        // A Create action needs the object it creates AND the lookup on that object pointing back
+        // here — Salesforce reports these as "Required fields are missing: [TargetSobjectType]" and
+        // "[TargetField]", neither of which names a parameter the caller can set. The schema
+        // documented targetObject as "required for Create type" while leaving it optional, and had
+        // no targetParentField at all. Say what is missing instead. Fixed 2026-09-22.
+        if (params.actionType === "Create") {
+            const missing: string[] = [];
+            if (!params.targetObject) missing.push("targetObject (the object the action creates, e.g. 'Contact')");
+            if (!params.targetParentField) missing.push(`targetParentField (the lookup field on that object pointing back to ${params.objectName})`);
+            if (missing.length) {
+                return { success: false, message: `A quick action of type 'Create' needs ${missing.join(" and ")}.` };
+            }
         }
         const xml = `<met:metadata xsi:type="met:QuickAction" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(fullName)}</met:fullName>
@@ -8153,6 +8159,7 @@ export async function createQuickAction(auth: SalesforceAuth, params: Record<str
     <met:optionsCreateFeedItem>false</met:optionsCreateFeedItem>
     ${buildQuickActionLayoutXml((params.fields ?? []).map((f: any) => String(f.name ?? f)).filter(Boolean))}
     ${params.targetObject ? `<met:targetObject>${x(params.targetObject)}</met:targetObject>` : ""}
+    ${params.targetParentField ? `<met:targetParentField>${x(params.targetParentField)}</met:targetParentField>` : ""}
     <met:type>${x(params.actionType)}</met:type>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);

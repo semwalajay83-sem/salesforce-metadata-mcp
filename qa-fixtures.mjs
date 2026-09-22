@@ -149,7 +149,7 @@ export function buildFixtures(ctx) {
     args: () => ({ objectName: OBJ, ruleName: `QASr${T}`, label: `QA SR ${T}`, sharedTo: { group: "AllInternalUsers" }, accessLevel: "Read" }),
   });
   add(2, "sf_create_quick_action", {
-    args: () => ({ objectName: OBJ, actionName: `QAQa${T}`, label: `QA QA ${T}`, actionType: "Create" }),
+    args: () => ({ objectName: OBJ, actionName: `QAQa${T}`, label: `QA QA ${T}`, actionType: "Update", fields: [{ name: "Notes__c" }] }),
   });
   add(2, "sf_create_global_action", {
     args: () => ({ actionName: `QAGa${T}`, label: `QA GA ${T}`, actionType: "LogACall" }),
