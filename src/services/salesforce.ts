@@ -2117,15 +2117,19 @@ function buildRoleXml(params: {
   opportunityAccessLevel: string; accountAccessLevel: string;
   mayForecastManagerShare: boolean;
 }): string {
+  // Role XSD sequence: caseAccessLevel, contactAccessLevel, description, mayForecastManagerShare,
+  // name, opportunityAccessLevel, parentRole. These were emitted in a different order, which is the
+  // same class of mistake that broke WorkflowFieldUpdate and the escalation rules.
+  // Note the Role type has no accountAccessLevel — the param is accepted but has nowhere to go.
   return `<met:metadata xsi:type="met:Role" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.fullName)}</met:fullName>
-    <met:name>${x(params.name)}</met:name>
+    ${params.caseAccessLevel ? `<met:caseAccessLevel>${x(params.caseAccessLevel)}</met:caseAccessLevel>` : ""}
+    ${params.contactAccessLevel ? `<met:contactAccessLevel>${x(params.contactAccessLevel)}</met:contactAccessLevel>` : ""}
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
-    ${params.parentRole ? `<met:parentRole>${x(params.parentRole)}</met:parentRole>` : ""}
-    <met:caseAccessLevel>${x(params.caseAccessLevel)}</met:caseAccessLevel>
-    <met:contactAccessLevel>${x(params.contactAccessLevel)}</met:contactAccessLevel>
-    <met:opportunityAccessLevel>${x(params.opportunityAccessLevel)}</met:opportunityAccessLevel>
     <met:mayForecastManagerShare>${xmlBool(params.mayForecastManagerShare)}</met:mayForecastManagerShare>
+    <met:name>${x(params.name)}</met:name>
+    ${params.opportunityAccessLevel ? `<met:opportunityAccessLevel>${x(params.opportunityAccessLevel)}</met:opportunityAccessLevel>` : ""}
+    ${params.parentRole ? `<met:parentRole>${x(params.parentRole)}</met:parentRole>` : ""}
   </met:metadata>`;
 }
 
@@ -8214,18 +8218,42 @@ export async function createFieldSet(auth: SalesforceAuth, params: Record<string
 
 // ─── CATEGORY C: Lightning Pages & App Builder ────────────────────────────────
 
+// The default template was "header_and_right_rail", which does not exist — every call died on
+// "Template c:header_and_right_rail doesn't exist." These are the real per-type defaults.
+// Fixed 2026-09-22.
+const DEFAULT_FLEXIPAGE_TEMPLATES: Record<string, string> = {
+    AppPage: "flexipage:defaultAppHomeTemplate",
+    HomePage: "flexipage:defaultHomeTemplate",
+    RecordPage: "flexipage:recordHomeTemplateDesktop",
+};
+
 export async function createFlexipage(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
         const templateXml = params.pageType === "RecordPage" && params.objectApiName
-            ? `<met:template><met:name>ManagedLayout</met:name></met:template>`
-            : `<met:template><met:name>${x(params.template ?? "header_and_right_rail")}</met:name></met:template>`;
+            ? `<met:template><met:name>flexipage:recordHomeTemplateDesktop</met:name></met:template>`
+            : `<met:template><met:name>${x(params.template ?? DEFAULT_FLEXIPAGE_TEMPLATES[params.pageType as string] ?? "flexipage:defaultAppHomeTemplate")}</met:name></met:template>`;
+        // A FlexiPage must carry at least one region — this emitted none, so every call failed with
+        // "Required field is missing: flexiPageRegions". (createFlexiPage, a near-identical sibling
+        // differing only in capitalisation and wired to nothing, already defaulted one.)
+        // XSD sequence: description, flexiPageRegions, masterLabel, sobjectType, template, type.
+        // Fixed 2026-09-22.
+        const regionsXml = (params.regions ?? []).map((r: any) => `
+    <met:flexiPageRegions>
+        <met:name>${x(String(r.name))}</met:name>
+        <met:type>${x(String(r.type ?? "Region"))}</met:type>
+    </met:flexiPageRegions>`).join("") || `
+    <met:flexiPageRegions>
+        <met:name>main</met:name>
+        <met:type>Region</met:type>
+    </met:flexiPageRegions>`;
         const xml = `<met:metadata xsi:type="met:FlexiPage" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.pageName)}</met:fullName>
-    <met:masterLabel>${x(params.masterLabel)}</met:masterLabel>
-    <met:type>${x(params.pageType)}</met:type>
-    ${params.objectApiName ? `<met:sobjectType>${x(params.objectApiName)}</met:sobjectType>` : ""}
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
+    ${regionsXml}
+    <met:masterLabel>${x(params.masterLabel)}</met:masterLabel>
+    ${params.objectApiName ? `<met:sobjectType>${x(params.objectApiName)}</met:sobjectType>` : ""}
     ${templateXml}
+    <met:type>${x(params.pageType)}</met:type>
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
@@ -8392,18 +8420,23 @@ export async function createAuthProvider(auth: SalesforceAuth, params: Record<st
 
 export async function createSamlSsoConfig(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
+        // samlEntityId is mandatory ("Required field is missing: samlEntityId") and was never sent,
+        // so this tool could not succeed. It identifies this org to the IdP and defaults to the org's
+        // own URL. Elements also now follow the SamlSsoConfig XSD sequence, which is alphabetical.
+        // Fixed 2026-09-22.
         const xml = `<met:metadata xsi:type="met:SamlSsoConfig" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.name)}</met:fullName>
-    <met:name>${x(params.name)}</met:name>
-    <met:issuer>${x(params.issuer)}</met:issuer>
-    ${params.identityProviderCertificate ? `<met:validationCert>${x(params.identityProviderCertificate)}</met:validationCert>` : ""}
-    <met:samlVersion>${x(params.samlVersion ?? "SAML2_0")}</met:samlVersion>
+    ${params.attributeName ? `<met:attributeName>${x(params.attributeName)}</met:attributeName>` : ""}
     <met:identityLocation>${x(params.identityLocation ?? "SubjectNameId")}</met:identityLocation>
     <met:identityMapping>${x(params.identityType ?? "Username")}</met:identityMapping>
-    <met:requestSignatureMethod>${x(params.requestSignatureMethod ?? "RSA-SHA256")}</met:requestSignatureMethod>
+    <met:issuer>${x(params.issuer)}</met:issuer>
     <met:loginUrl>${x(params.loginUrl)}</met:loginUrl>
     ${params.logoutUrl ? `<met:logoutUrl>${x(params.logoutUrl)}</met:logoutUrl>` : ""}
-    ${params.attributeName ? `<met:attributeName>${x(params.attributeName)}</met:attributeName>` : ""}
+    <met:name>${x(params.name)}</met:name>
+    <met:requestSignatureMethod>${x(params.requestSignatureMethod ?? "RSA-SHA256")}</met:requestSignatureMethod>
+    <met:samlEntityId>${x(params.samlEntityId ?? auth.instanceUrl)}</met:samlEntityId>
+    <met:samlVersion>${x(params.samlVersion ?? "SAML2_0")}</met:samlVersion>
+    ${params.identityProviderCertificate ? `<met:validationCert>${x(params.identityProviderCertificate)}</met:validationCert>` : ""}
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
@@ -8510,13 +8543,46 @@ export async function createPushTopic(auth: SalesforceAuth, params: Record<strin
 
 export async function configureChangeDataCapture(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
+        // Channel members used to be nested inside PlatformEventChannel as <channelMembers>. They
+        // are their own metadata type now, so the old payload failed with "Property 'channelMembers'
+        // not valid in version 66.0". One PlatformEventChannelMember per entity instead.
+        // Fixed 2026-09-22.
         const entities = params.entities as string[];
-        const xml = `<met:metadata xsi:type="met:PlatformEventChannel" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <met:fullName>ChangeEvents</met:fullName>
-    <met:channelType>data</met:channelType>
-    ${entities.map(e => `<met:channelMembers><met:selectedEntity>${x(e)}</met:selectedEntity></met:channelMembers>`).join("\n")}
+        const channel = params.channelName ?? "ChangeEvents";
+        // selectedEntity wants the change-event name: Account -> AccountChangeEvent,
+        // My_Obj__c -> My_Obj__ChangeEvent. Accept either form from the caller.
+        const toChangeEvent = (e: string): string => {
+            if (/ChangeEvent$/.test(e)) return e;
+            if (/__c$/i.test(e)) return e.replace(/__c$/i, "__ChangeEvent");
+            return `${e}ChangeEvent`;
+        };
+        const results: Array<{ entity: string; success: boolean; message?: string }> = [];
+        for (const entity of entities) {
+            const selected = toChangeEvent(entity);
+            const xml = `<met:metadata xsi:type="met:PlatformEventChannelMember" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <met:fullName>${x(`${channel}_${selected}`)}</met:fullName>
+    <met:eventChannel>${x(channel)}</met:eventChannel>
+    <met:selectedEntity>${x(selected)}</met:selectedEntity>
 </met:metadata>`;
-        return await upsertMetadata(auth, xml);
+            const r = await upsertMetadata(auth, xml);
+            results.push({ entity: selected, success: r.success === true, message: r.message });
+        }
+        const failed = results.filter((r) => !r.success);
+        if (failed.length) {
+            return {
+                success: false,
+                message: `Change Data Capture failed for ${failed.length} of ${results.length} entities: ` +
+                    failed.map((f) => `${f.entity} (${f.message ?? "unknown error"})`).join("; "),
+                results,
+            };
+        }
+        return {
+            success: true,
+            fullName: channel,
+            created: true,
+            message: `Change Data Capture enabled on channel '${channel}' for: ${results.map((r) => r.entity).join(", ")}.`,
+            results,
+        };
     } catch (err) {
         return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
     }

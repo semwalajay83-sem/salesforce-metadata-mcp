@@ -773,15 +773,22 @@ export const CreateRoleSchema = z.object({
   name: z.string().min(1).describe("Role display name, e.g. 'VP of Sales'"),
   description: z.string().optional().describe("Description of this role"),
   parentRole: z.string().optional().describe("Parent role API name (omit for top-level role)"),
-  caseAccessLevel: z.enum(["None", "Read", "Edit", "ReadWrite"]).default("ReadWrite")
+  caseAccessLevel: z.enum(["None", "Read", "Edit", "ReadWrite"]).default("Edit")
+    .transform((v) => (v === "ReadWrite" ? "Edit" : v))
     .describe("Case access level for subordinates"),
-  contactAccessLevel: z.enum(["None", "Read", "Edit", "ReadWrite"]).default("ReadWrite")
+  contactAccessLevel: z.enum(["None", "Read", "Edit", "ReadWrite"]).default("Edit")
+    .transform((v) => (v === "ReadWrite" ? "Edit" : v))
     .describe("Contact access level for subordinates"),
-  opportunityAccessLevel: z.enum(["None", "Read", "Edit", "ReadWrite"]).default("ReadWrite")
+  opportunityAccessLevel: z.enum(["None", "Read", "Edit", "ReadWrite"]).default("Edit")
+    .transform((v) => (v === "ReadWrite" ? "Edit" : v))
     .describe("Opportunity access level for subordinates"),
-  accountAccessLevel: z.enum(["None", "Read", "Edit", "ReadWrite"]).default("ReadWrite")
+  accountAccessLevel: z.enum(["None", "Read", "Edit", "ReadWrite"]).default("Edit")
+    .transform((v) => (v === "ReadWrite" ? "Edit" : v))
     .describe("Account and contact access level for subordinates"),
-  mayForecastManagerShare: z.boolean().default(true).describe("Grant manager forecast sharing"),
+  // Defaulting this to true made Salesforce demand a forecast user ("field integrity
+  // exception: unknown (must specify a forecast user id)") on every role created without
+  // one. Off by default. Fixed 2026-09-22.
+  mayForecastManagerShare: z.boolean().default(false).describe("Grant manager forecast sharing. Needs forecasting configured in the org."),
 }).strict();
 
 export const CreateQueueSchema = z.object({
@@ -2175,11 +2182,18 @@ export const CreateUserRoleHierarchySchema = z.object({
   roleName: z.string().min(1).max(80).regex(/^[A-Za-z][A-Za-z0-9_]*$/).describe("Role API name"),
   label: z.string().min(1).describe("Role display label"),
   parentRoleName: z.string().optional().describe("Parent role API name (omit for top-level)"),
-  caseAccessLevel: z.enum(["None","Read","Edit","ReadWrite"]).default("ReadWrite").describe("Case access for subordinates"),
-  contactAccessLevel: z.enum(["None","Read","Edit","ReadWrite"]).default("ReadWrite").describe("Contact access for subordinates"),
-  opportunityAccessLevel: z.enum(["None","Read","Edit","ReadWrite"]).default("ReadWrite").describe("Opportunity access for subordinates"),
-  accountAccessLevel: z.enum(["None","Read","Edit","ReadWrite"]).default("ReadWrite").describe("Account access for subordinates"),
-  mayForecastManagerShare: z.boolean().default(true).describe("Grant manager forecast sharing"),
+  caseAccessLevel: z.enum(["None","Read","Edit","ReadWrite"]).default("Edit")
+    .transform((v) => (v === "ReadWrite" ? "Edit" : v)).describe("Case access for subordinates"),
+  contactAccessLevel: z.enum(["None","Read","Edit","ReadWrite"]).default("Edit")
+    .transform((v) => (v === "ReadWrite" ? "Edit" : v)).describe("Contact access for subordinates"),
+  opportunityAccessLevel: z.enum(["None","Read","Edit","ReadWrite"]).default("Edit")
+    .transform((v) => (v === "ReadWrite" ? "Edit" : v)).describe("Opportunity access for subordinates"),
+  accountAccessLevel: z.enum(["None","Read","Edit","ReadWrite"]).default("Edit")
+    .transform((v) => (v === "ReadWrite" ? "Edit" : v)).describe("Account access for subordinates"),
+  // Defaulting this to true made Salesforce demand a forecast user ("field integrity
+  // exception: unknown (must specify a forecast user id)") on every role created without
+  // one. Off by default. Fixed 2026-09-22.
+  mayForecastManagerShare: z.boolean().default(false).describe("Grant manager forecast sharing. Needs forecasting configured in the org."),
   description: z.string().optional().describe("Role description"),
 }).strict();
 
@@ -3025,7 +3039,10 @@ export const CreateFlexipageSchema = z.object({
   description: z.string().max(1000).optional().describe("Description"),
   masterLabel: z.string().min(1).max(255).describe("Master label for the page"),
   objectApiName: z.string().optional().describe("Object API name (required for RecordPage)"),
-  template: z.string().default("header_and_right_rail").describe("Page template name, e.g. 'header_and_right_rail'"),
+  // Was defaulted to "header_and_right_rail", which is not a real template — it made every
+  // call fail with "Template c:header_and_right_rail doesn't exist." Left unset so the
+  // service can pick the right default for the page type. Fixed 2026-09-22.
+  template: z.string().optional().describe("Page template name, e.g. 'flexipage:defaultAppHomeTemplate'. Defaults to the standard template for the page type."),
 }).strict();
 
 export const CreatePathAssistantSchema = z.object({
@@ -3117,6 +3134,7 @@ export const CreateSamlSsoConfigSchema = z.object({
   identityType: z.enum(["Username", "FederationId", "UserId"]).default("Username").describe("User identity type"),
   requestSignatureMethod: z.enum(["RSA-SHA256"]).default("RSA-SHA256").describe("Signature method"),
   loginUrl: z.string().min(1).describe("Identity provider login URL"),
+  samlEntityId: z.string().optional().describe("Entity ID that identifies this org to the IdP. Required by Salesforce; defaults to the org's own URL."),
   logoutUrl: z.string().optional().describe("Identity provider logout URL"),
   attributeName: z.string().optional().describe("SAML attribute name (for Attribute identity location)"),
 }).strict();
