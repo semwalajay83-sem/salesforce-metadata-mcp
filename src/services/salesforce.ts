@@ -3052,7 +3052,13 @@ export async function createReportType(auth: SalesforceAuth, params: Parameters<
   return upsertMetadata(auth, buildReportTypeXml(params));
 }
 export async function createConnectedApp(auth: SalesforceAuth, params: Parameters<typeof buildConnectedAppXml>[0]): Promise<ToolResult> {
-  return upsertMetadata(auth, buildConnectedAppXml(params));
+  const result = await upsertMetadata(auth, buildConnectedAppXml(params));
+  // Newer orgs refuse connected-app creation outright ("contact Salesforce Customer Support") —
+  // Salesforce steers them to External Client Apps. Name the tool that does work. Added 2026-09-23.
+  if (!result.success && /can.t create a connected app/i.test(result.message ?? "")) {
+    return { ...result, message: `${result.message} This org only allows External Client Apps — use sf_create_external_client_app instead.` };
+  }
+  return result;
 }
 
 // External Client Apps decompose into 3 independent metadata types, each deployed with its own
@@ -8900,7 +8906,10 @@ export async function createConnectedAppOAuthPolicy(auth: SalesforceAuth, params
         // accepted partial would have wiped the app's own configuration. Read the current app and
         // carry its identity through. Fixed 2026-09-22.
         const existing = await readMetadataItem(auth, "ConnectedApp", params.connectedAppName);
-        if (!existing.success) {
+        // readMetadata answers a missing app with success and <records xsi:nil="true"/>, so checking
+        // only `success` let a nonexistent app through to an upsert that tried to CREATE it with
+        // nothing but a policy. Require the app's own fullName in the reply. Fixed 2026-09-23.
+        if (!existing.success || !/<records[^>]*>[\s\S]*?<fullName>/i.test(String(existing.rawXml ?? ""))) {
             return { success: false, message: `Connected app '${params.connectedAppName}' not found, so its OAuth policy cannot be updated without overwriting the app. Create it first with sf_create_connected_app.` };
         }
         const pick = (tag: string): string => existing.rawXml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "i"))?.[1] ?? "";

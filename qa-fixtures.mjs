@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
 /**
  * Fixtures for the full-surface sweep. One entry per registered tool.
@@ -552,10 +553,6 @@ export function buildFixtures(ctx) {
     ["sf_create_document_generation", () => ({ templateName: `QADg${T}`, label: `QA DG ${T}`, objectApiName: "Account", dataSourceName: `QADr2${T}` })],
     ["sf_create_scratch_org", () => ({ alias: `qa${T}`, durationDays: 1 })],
     ["sf_delete_scratch_org", () => ({ alias: `qa${T}` })],
-    ["sf_create_package", () => ({ name: `QA Pkg ${T}`, packageType: "Unlocked", path: "force-app" })],
-    ["sf_create_package_version", () => ({ packageId: "0Ho000000000000AAA" })],
-    ["sf_install_package", () => ({ packageId: "04t000000000000AAA" })],
-    ["sf_uninstall_package", () => ({ packageId: "04t000000000000AAA" })],
     ["sf_devops_create_work_item", () => ({ name: `QA WI ${T}` })],
     ["sf_devops_promote_work_item", () => ({ workItemId: "a00000000000000AAA" })],
     ["sf_detect_devops_merge_conflict", () => ({ workItemId: "a00000000000000AAA" })],
@@ -572,6 +569,55 @@ export function buildFixtures(ctx) {
   ]) {
     add(10, tool, { args, expectUnavailable: true });
   }
+
+  // ── PHASE 10b — packaging, as one real chain. ──────────────────────────────────────────────
+  // These used to send fake ids with no project directory, so all four failed on the fixture, not
+  // the tool. With a Dev Hub (QA_DEVHUB, e.g. demo-org) they now build a throwaway project, create
+  // an unlocked package and a version, install it into the sweep org and uninstall it, then delete
+  // both from the Dev Hub. Without one, create_package must say a Dev Hub is needed.
+  const devHub = process.env.QA_DEVHUB;
+  const pkgDir = () => `${ctx.vals.tmpDir}/pkgproj`;
+  add(10, "sf_create_package", {
+    args: () => {
+      mkdirSync(`${pkgDir()}/force-app/main/default/labels`, { recursive: true });
+      writeFileSync(`${pkgDir()}/sfdx-project.json`, JSON.stringify({
+        packageDirectories: [{ path: "force-app", default: true }], namespace: "", sourceApiVersion: "66.0",
+      }));
+      writeFileSync(`${pkgDir()}/force-app/main/default/labels/CustomLabels.labels-meta.xml`,
+        `<?xml version="1.0" encoding="UTF-8"?><CustomLabels xmlns="http://soap.sforce.com/2006/04/metadata"><labels><fullName>QAPkg${T}</fullName><language>en_US</language><protected>false</protected><shortDescription>QA</shortDescription><value>QA package</value></labels></CustomLabels>`);
+      return { name: `QAPkg${T}`, packageType: "Unlocked", path: "force-app", projectDirectory: pkgDir(), noNamespace: true, ...(devHub ? { devHubAlias: devHub } : {}) };
+    },
+    expectUnavailable: !devHub,
+    timeout: 300000,
+    after: (c, r) => { const id = JSON.stringify(r.payload ?? "").match(/0Ho[A-Za-z0-9]{15}/)?.[0]; if (id) c.vals.pkgId = id; },
+  });
+  add(10, "sf_create_package_version", {
+    args: () => (ctx.vals.pkgId ? { packageId: ctx.vals.pkgId, projectDirectory: pkgDir(), devHubAlias: devHub, wait: 25 } : null),
+    skipReason: "no package from sf_create_package (set QA_DEVHUB to run the packaging chain)",
+    timeout: 1700000,
+    verify: (c, r) => /"Status":"Success"/.test(JSON.stringify(r.payload ?? "")) || "version not in Success status",
+    after: (c, r) => { const id = JSON.stringify(r.payload ?? "").match(/04t[A-Za-z0-9]{15}/)?.[0]; if (id) c.vals.pkgVersionId = id; },
+  });
+  add(10, "sf_install_package", {
+    args: () => (ctx.vals.pkgVersionId ? { packageId: ctx.vals.pkgVersionId, wait: 15 } : null),
+    skipReason: "no package version to install",
+    timeout: 1200000,
+    verify: (c, r, v) => (v.toolingSoql("SELECT SubscriberPackageVersionId FROM InstalledSubscriberPackage") ?? [])
+      .some((p) => ctx.vals.pkgVersionId.startsWith(p.SubscriberPackageVersionId.slice(0, 15))) || "package not in the org's installed list",
+  });
+  add(10, "sf_uninstall_package", {
+    args: () => (ctx.vals.pkgVersionId ? { packageId: ctx.vals.pkgVersionId, wait: 15 } : null),
+    skipReason: "no package version to uninstall",
+    timeout: 1200000,
+    verify: (c, r, v) => !(v.toolingSoql("SELECT SubscriberPackageVersionId FROM InstalledSubscriberPackage") ?? [])
+      .some((p) => ctx.vals.pkgVersionId.startsWith(p.SubscriberPackageVersionId.slice(0, 15))) || "package still installed",
+    after: () => {
+      // Leave nothing behind in the Dev Hub.
+      const run = (a) => { try { execFileSync("sf", a, { cwd: pkgDir(), stdio: "ignore", shell: true, timeout: 300000 }); } catch { /* best effort */ } };
+      run(["package", "version", "delete", "-p", ctx.vals.pkgVersionId, "-v", devHub, "--no-prompt"]);
+      run(["package", "delete", "-p", ctx.vals.pkgId, "-v", devHub, "--no-prompt"]);
+    },
+  });
 
   // ── PHASE 11 — local/filesystem generators (no org involvement). ───────────────────────────
   add(11, "sf_create_mcp_server", { args: () => ({ serverName: `qa-mcp-${T}`, outputDirectory: `${ctx.vals.tmpDir}/qa-mcp-${T}` }) });

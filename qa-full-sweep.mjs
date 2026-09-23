@@ -95,6 +95,8 @@ const UNAVAIL_SIGNALS = [
   /Dev ?Hub/i,
   /must be enabled/i,
   /OmniStudio|Vlocity|DevOps Center|Salesforce CPQ/i,
+  // Newer orgs refuse connected apps outright and point at External Client Apps.
+  /only allows External Client Apps/i,
 ];
 const OPAQUE_SIGNALS = [
   /^undefined$/i, /^null$/i, /^\[object Object\]$/i, /^Cannot read propert/i,
