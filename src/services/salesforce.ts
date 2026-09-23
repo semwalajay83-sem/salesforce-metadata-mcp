@@ -7743,7 +7743,10 @@ export async function createPackageVersion(_auth: SalesforceAuth, params: Record
     if (!project.ok) return { success: false, message: project.message };
     const args: string[] = ["package", "version", "create", "--package", params.packageId, "--json"];
     if (params.devHubAlias) args.push("--target-dev-hub", params.devHubAlias);
+    // The CLI demands exactly one of --installation-key / --installation-key-bypass, so a call
+    // without a key always failed. No key means an unprotected version. Fixed 2026-09-23.
     if (params.installationKey) args.push("--installation-key", params.installationKey);
+    else args.push("--installation-key-bypass");
     if (params.codeVersion) args.push("--version-number", params.codeVersion);
     if (params.wait) args.push("--wait", String(params.wait));
     const outcome = execSfCli(args, 600_000, project.dir);
