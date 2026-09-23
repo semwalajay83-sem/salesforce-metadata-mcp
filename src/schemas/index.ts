@@ -2246,7 +2246,10 @@ export const AssignTerritoryToUserSchema = z.object({
 }).strict();
 
 export const CreateForecastHierarchySchema = z.object({
-  forecastingType: z.enum(["OpportunityRevenue","OpportunityQuantity","OverlayRevenue","OverlayQuantity","ProductFamily"]).default("OpportunityRevenue").describe("Forecasting type"),
+  // Was an enum offering "OverlayRevenue", "OverlayQuantity" and "ProductFamily" — none of them a
+  // forecasting type name — while omitting the line-item/schedule types orgs actually have. The set
+  // is per-org, so the tool checks it and lists the real names instead. Fixed 2026-09-23.
+  forecastingType: z.string().min(1).default("OpportunityRevenue").describe("Forecasting type developer name, e.g. 'OpportunityRevenue', 'OpportunityQuantity', 'OpportunityLineItemRevenue'. An unknown name returns the org's list."),
   roleName: z.string().optional().describe("Role name (informational)"),
   displayCurrency: z.string().default("USD").describe("Currency code for display (e.g. 'USD', 'EUR')"),
   isActive: z.boolean().default(true).describe("Enable this forecasting type"),

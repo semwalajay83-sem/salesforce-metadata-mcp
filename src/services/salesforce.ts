@@ -2742,6 +2742,12 @@ function buildDuplicateRuleXml(params: {
       <met:matchingRule>${x(bareRule)}</met:matchingRule>${objectMappingXml}
     </met:duplicateRuleMatchRules>`;
   }).join("\n");
+  // A bare Allow does nothing, and Salesforce refuses to activate a rule that is Allow on both
+  // create and edit with no operation ("which has no effect on how duplicates are handled") — so
+  // the default call always failed. Salesforce's own Standard_Account_Duplicate_Rule pairs Allow
+  // with Report (and Alert where it has alert text); do the same. Fixed 2026-09-23.
+  const ops = (action: string): string[] =>
+    action === "Block" ? ["Alert"] : [...(params.alertMessage ? ["Alert"] : []), "Report"];
   // XSD sequence: fullName, actionOnInsert, actionOnUpdate, alertText, description,
   // duplicateRuleFilter, duplicateRuleMatchRules, isActive, masterLabel, operationsOnInsert,
   // operationsOnUpdate, securityOption, sortOrder. The label element is <masterLabel>.
@@ -2754,8 +2760,8 @@ function buildDuplicateRuleXml(params: {
     ${mrXml}
     <met:isActive>${params.isActive}</met:isActive>
     <met:masterLabel>${x(params.label)}</met:masterLabel>
-    ${params.actionOnInsert === "Block" || params.alertMessage ? `<met:operationsOnInsert>Alert</met:operationsOnInsert>` : ""}
-    ${params.actionOnUpdate === "Block" || params.alertMessage ? `<met:operationsOnUpdate>Alert</met:operationsOnUpdate>` : ""}
+    ${ops(params.actionOnInsert).map((o) => `<met:operationsOnInsert>${o}</met:operationsOnInsert>`).join("")}
+    ${ops(params.actionOnUpdate).map((o) => `<met:operationsOnUpdate>${o}</met:operationsOnUpdate>`).join("")}
     <met:securityOption>EnforceSharingRules</met:securityOption>
     <met:sortOrder>${params.sortOrder ?? 1}</met:sortOrder>
   </met:metadata>`;
@@ -3211,8 +3217,53 @@ export async function createFieldDependency(auth: SalesforceAuth, params: {
     return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
   }
 }
+// The tool's template choices → Salesforce's template names (GET connect/communities/templates).
+const EXPERIENCE_TEMPLATE_NAMES: Record<string, string> = {
+  CustomerService: "Customer Service",
+  Partner: "Partner Central",
+  LWR: "Build Your Own (LWR)",
+  Aloha: "Aloha",
+  Microsites: "Microsite (LWR)",
+  VFPage: "Salesforce Tabs + Visualforce",
+};
+
 export async function createExperienceSite(auth: SalesforceAuth, params: Parameters<typeof buildNetworkXml>[0]): Promise<ToolResult> {
-  return upsertMetadata(auth, buildNetworkXml(params));
+  // This used to upsert a bare Network component. That cannot create a site: a Network needs an
+  // existing CustomSite (picassoSite), email templates (changePasswordTemplate and friends) and a
+  // sender — none of which the tool made — and the `template` param was never sent at all. The
+  // Connect API builds the Network, the site and the template in one call; it is what Setup uses.
+  // Verified against qa-scratch 2026-09-23. Fixed 2026-09-23.
+  try {
+    const client = createClient(auth);
+    const templateName = EXPERIENCE_TEMPLATE_NAMES[params.template] ?? params.template;
+    const existing = await client.get("/connect/communities");
+    const prior = ((existing.data as any).communities ?? []).find((c: any) => c.name === params.label);
+    if (prior) {
+      return { success: true, fullName: prior.id, created: false, message: `Experience site '${params.label}' already exists (${prior.id}, ${prior.status}).` } as ToolResult;
+    }
+    const resp = await client.post("/connect/communities", {
+      name: params.label,
+      templateName,
+      urlPathPrefix: params.urlPathPrefix,
+      ...(params.description ? { description: params.description } : {}),
+    });
+    const jobId = (resp.data as any).jobId;
+    // Creation is asynchronous. Wait briefly so the caller gets an id it can use right away.
+    for (let i = 0; i < 12; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      const list = await client.get("/connect/communities");
+      const site = ((list.data as any).communities ?? []).find((c: any) => c.name === params.label);
+      if (site) {
+        const statusNote = params.status && params.status !== "UnderConstruction"
+          ? ` Salesforce creates every site Under Construction; publish it from Experience Builder to take it '${params.status}'.`
+          : "";
+        return { success: true, fullName: site.id, created: true, message: `Experience site '${params.label}' created from the '${templateName}' template (${site.id}) at /${site.urlPathPrefix}.${statusNote}` } as ToolResult;
+      }
+    }
+    return { success: true, fullName: jobId, created: true, message: `Experience site '${params.label}' is still being built (job ${jobId}). Query BackgroundOperation with that Id to track it.` } as ToolResult;
+  } catch (err) {
+    return { success: false, message: sanitizeError(err instanceof Error ? err.message : String(err)) };
+  }
 }
 export async function createAgent(auth: SalesforceAuth, params: Parameters<typeof buildBotXml>[0]): Promise<ToolResult> {
   return upsertMetadata(auth, buildBotXml(params));
@@ -6092,12 +6143,37 @@ export async function assignTerritoryToUser(auth: SalesforceAuth, params: Record
 }
 export async function createForecastHierarchy(auth: SalesforceAuth, params: Record<string, any>): Promise<any> {
     try {
+        // ForecastingSettings is a SETTINGS component. This used to send one forecasting type with
+        // only <active> and <name>; Salesforce took that as the type's full definition and died on a
+        // NullPointerException over the missing hasProductFamily. Read the settings, flip <active>
+        // on the one type asked for, carry everything else through. Same trap as
+        // createBusinessHours. Fixed 2026-09-23.
+        const existing = await readMetadataItem(auth, "ForecastingSettings", "Forecasting");
+        if (!existing.success) {
+            return { success: false, message: `Could not read the org's forecasting settings, and writing without them would discard the other forecasting types. ${existing.message ?? ""}`.trim() };
+        }
+        const records = String(existing.rawXml ?? "").match(/<records[^>]*>([\s\S]*?)<\/records>/i)?.[1] ?? "";
+        const typeBlocks = records.match(/<forecastingTypeSettings>[\s\S]*?<\/forecastingTypeSettings>/gi) ?? [];
+        const nameOf = (blk: string): string => blk.match(/<name>([^<]*)<\/name>/i)?.[1] ?? "";
+        const wanted = String(params.forecastingType);
+        if (!typeBlocks.some((blk) => nameOf(blk) === wanted)) {
+            const available = typeBlocks.map(nameOf).filter(Boolean);
+            return {
+                success: false,
+                message: available.length
+                    ? `Forecasting type '${wanted}' does not exist in this org. Available: ${available.join(", ")}.`
+                    : "This org has no forecasting types. Enable Collaborative Forecasts (Setup → Forecasts Settings) first.",
+            };
+        }
+        const active = xmlBool(params.isActive, true);
+        const body = records
+            .replace(/<fullName>[^<]*<\/fullName>/i, "")
+            .replace(/<forecastingTypeSettings>[\s\S]*?<\/forecastingTypeSettings>/gi, (blk) =>
+                nameOf(blk) === wanted ? blk.replace(/<active>[^<]*<\/active>/i, `<active>${active}</active>`) : blk)
+            .replace(/<(\/?)(\w+)((?:\s[^>]*)?)>/g, "<$1met:$2$3>");
         const xml = `<met:metadata xsi:type="met:ForecastingSettings" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-    <met:fullName>ForecastingSettings</met:fullName>
-    <met:forecastingTypeSettings>
-        <met:active>${xmlBool(params.isActive, true)}</met:active>
-        <met:name>${x(params.forecastingType)}</met:name>
-    </met:forecastingTypeSettings>
+    <met:fullName>Forecasting</met:fullName>
+    ${body}
 </met:metadata>`;
         return await upsertMetadata(auth, xml);
     } catch (err) {
