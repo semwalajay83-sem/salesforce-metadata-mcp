@@ -1,5 +1,55 @@
 # Changelog
 
+## [3.2.0] - 2026-09-23
+
+A full-surface QA release. Every one of the 233 tools was called individually over real MCP traffic
+(`tools/call` → schema → service → org) against a Developer Edition org and a scratch org with
+Communities, Service Cloud, Knowledge and Omni-Channel enabled, and each result was checked in the
+org with the sf CLI — never by the server under test. **3.1.0 and 3.1.1 were never published to npm,
+so this release also carries them** (lazy-toolset fallback, `sf_query_records` limit, `sf_find_tool`
+search — see below).
+
+Result on the scratch org: **170 PASS / 41 feature-unavailable / 4 org-limit / 17 open**, up from a
+baseline of 100 PASS / 114 failing on the first sweep. None of the 17 open items is a tool sending a
+wrong payload for a feature the org has: they are cascades (OmniStudio not installed, an org cap
+reached earlier in the run), unlicensed features (Agentforce, Einstein, Digital Engagement) and
+fixture gaps. **No tool claims success without doing the work.**
+
+### Fixed: tools that silently replaced a whole component
+`upsertMetadata` replaces what it names. Eight tools sent only the part they were changing, so they
+either failed or would have wiped the rest: compact layouts / list views / search layouts, queue
+routing config, connected-app OAuth policy, the five Workflow children (a `Workflow` upsert replaces
+an object's entire workflow — the old 500s were the only reason nothing was lost), business hours,
+holidays, LWC Jest tests, and forecasting settings. Each now addresses its component directly or
+reads, modifies and writes it back.
+
+### Fixed: tools that could not succeed at all
+Around 50 tools, including: custom tabs, custom notification types, roles (access-level enum and
+forecast-manager default), FlexiPages, SAML SSO, change data capture, quick/global actions, auth
+providers with custom endpoints, sharing rules, dashboards, path assistants, scheduled flows,
+duplicate rules (a bare Allow is rejected — Allow now carries Report), data category groups
+(`KnowledgeArticleVersion`), service territories (operating hours), Experience sites (now created
+through the Connect API from a real template), and package versions (`--installation-key-bypass`).
+The full create → version → install → uninstall packaging chain is verified end to end.
+
+### Fixed: errors nobody could act on
+Bare 404s and 500s now name the cause: sandboxes and change sets on editions without them, DevOps
+Center not installed, a connected app on an org that only allows External Client Apps, an Experience
+page (Salesforce has no REST endpoint for creating one — the tool now says so), scheduled-job compile
+errors, and upserts whose external-ID field is invisible to the running user.
+
+### Changed
+- `sf_create_forecast_hierarchy`: `forecastingType` is now a string checked against the org (the old
+  enum offered names that do not exist). Unknown names return the org's list.
+- `sf_create_experience_site` returns the site URL, Builder link and the Site API names Salesforce
+  chose (it derives them from the label).
+
+### Added
+- `qa-full-sweep.mjs` and friends: the full-surface sweep, with a four-way verdict
+  (PASS / UNAVAIL / LIMIT / BUG). `QA_DEVHUB=<alias>` enables the real packaging chain.
+- `qa-workflow-children.mjs`, `qa-translation-merge.mjs`, `qa-scratch-fixes.mjs`: pins for the
+  fixes above.
+
 ## [3.1.1] - 2026-09-09
 
 Three bugs reported against a Claude Desktop session. **None were introduced by 3.1.0.** Two date to

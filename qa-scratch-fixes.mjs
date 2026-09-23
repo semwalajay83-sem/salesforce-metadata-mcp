@@ -79,7 +79,12 @@ check("second call is idempotent", r.ok && r.payload?.created === false, r.ok ? 
 
 console.log("4. data category group defaults to a categorizable entity");
 r = await s.call("sf_create_data_category", { fullName: `QADc${T}`, label: `QA DC ${T}`, categories: [{ name: `QACat${T}`, label: `QA Cat ${T}` }] });
-check("default call succeeds (KnowledgeArticleVersion)", r.ok, r.ok ? "" : r.error);
+if (!r.ok && /maximum limit of the total number of data category groups/i.test(r.error)) {
+  // Deleted groups keep counting toward the org cap for a while, so repeated runs hit it.
+  console.log("  SKIP  default call — org is at its data category group cap (not a tool failure)");
+} else {
+  check("default call succeeds (KnowledgeArticleVersion)", r.ok, r.ok ? "" : r.error);
+}
 
 console.log("5. service territory resolves its operating hours");
 const ohName = `QA OH ${T}`;
@@ -92,5 +97,12 @@ const st = soql(`SELECT Name, OperatingHours.Name FROM ServiceTerritory WHERE Na
 check("territory linked to those hours (CLI)", st.length === 1 && st[0].OperatingHours?.Name === ohName, JSON.stringify(st.map((x) => x.OperatingHours?.Name)));
 
 s.stop();
+// Duplicate rules (5 active per object) and data category groups are capped, so leftovers from one
+// run break the next. Remove this run's; sites and territories are harmless and cannot be deleted
+// through the Metadata API anyway.
+// One call per component: a combined delete fails outright if any one of them was never created.
+for (const m of [`DuplicateRule:Lead.QADr${T}`, `DataCategoryGroup:QADc${T}`]) {
+  try { execSync(`sf project delete source -m ${m} -o ${ALIAS} --no-prompt`, { cwd: "qa-scratch", stdio: "ignore" }); } catch { /* best effort */ }
+}
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
