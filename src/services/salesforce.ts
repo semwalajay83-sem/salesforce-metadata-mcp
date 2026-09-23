@@ -3263,7 +3263,17 @@ export async function createExperienceSite(auth: SalesforceAuth, params: Paramet
         const statusNote = params.status && params.status !== "UnderConstruction"
           ? ` Salesforce creates every site Under Construction; publish it from Experience Builder to take it '${params.status}'.`
           : "";
-        return { success: true, fullName: site.id, created: true, message: `Experience site '${params.label}' created from the '${templateName}' template (${site.id}) at /${site.urlPathPrefix}.${statusNote}` } as ToolResult;
+        // Salesforce names the underlying Site records from the label and ignores any name we
+        // pass, so report the names it actually chose: other tools (embedded service) need them.
+        let siteNames = "";
+        try {
+          const q = await client.get(`/query?q=${encodeURIComponent(`SELECT Name FROM Site WHERE MasterLabel = '${String(params.label).replace(/'/g, "\\'")}'`)}`);
+          siteNames = ((q.data as any).records ?? []).map((r: any) => r.Name).join(", ");
+        } catch { /* informational only */ }
+        return {
+          success: true, fullName: site.id, created: true,
+          message: `Experience site '${params.label}' created from the '${templateName}' template (${site.id}). URL: ${site.siteUrl ?? `/${site.urlPathPrefix}`}. Builder: ${site.builderUrl ?? "Setup → Digital Experiences"}.${siteNames ? ` Site API names: ${siteNames}.` : ""}${statusNote}`,
+        } as ToolResult;
       }
     }
     return { success: true, fullName: jobId, created: true, message: `Experience site '${params.label}' is still being built (job ${jobId}). Query BackgroundOperation with that Id to track it.` } as ToolResult;

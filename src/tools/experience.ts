@@ -56,7 +56,14 @@ export function registerExperienceTools(server: McpServer): void {
           created: true
         });
       } catch (err: unknown) {
-        return resultContent({ success: false, message: err instanceof Error ? err.message : String(err) });
+        const msg = err instanceof Error ? err.message : String(err);
+        // connect/communities/{id}/pages does not exist — measured 404 for GET and POST against a
+        // real site id on 2026-09-23. Pages live in the site's ExperienceBundle (Aura) or
+        // DigitalExperienceBundle (LWR). Until the tool writes those, say so instead of a bare 404.
+        if (/\b404\b|NOT_FOUND/.test(msg)) {
+          return resultContent({ success: false, message: `Salesforce has no REST endpoint for creating Experience Cloud pages, so this tool cannot create '${params.pageName}'. Add the page in Experience Builder, or deploy it as part of the site's ExperienceBundle / DigitalExperienceBundle. (Underlying error: ${msg})` });
+        }
+        return resultContent({ success: false, message: msg });
       }
     }
   );

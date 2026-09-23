@@ -1021,7 +1021,7 @@ export const UpdateLwcSchema = z.object({
 // ─── EXPERIENCE CLOUD ────────────────────────────────────────────────────────
 
 export const CreateExperienceSiteSchema = z.object({
-  siteName: z.string().min(1).regex(/^[A-Za-z][A-Za-z0-9_]*$/).describe("Site API name, e.g. 'CustomerPortal'"),
+  siteName: z.string().min(1).regex(/^[A-Za-z][A-Za-z0-9_]*$/).describe("Site API name, e.g. 'CustomerPortal'. Note: Salesforce derives the actual Site API names from the label; the result reports them."),
   label: z.string().min(1).describe("Site display label"),
   template: z.enum(["CustomerService", "Partner", "LWR", "Aloha", "Microsites", "VFPage"])
     .default("CustomerService").describe("Experience Cloud template to use"),
