@@ -2744,7 +2744,9 @@ export const CreatePermSetGroupSchema = z.object({
 export const CreateDataCategorySchema = z.object({
   fullName: z.string().min(1).regex(/^[A-Za-z][A-Za-z0-9_]*$/).describe("Data category group API name"),
   label: z.string().min(1).describe("Group display label"),
-  objectUsage: z.string().default("KnowledgeArticle").describe("Object to categorize, e.g. 'KnowledgeArticle'"),
+  // Was "KnowledgeArticle", which Salesforce rejects as "not categorizable" — the categorizable
+  // entity is the article VERSION. Verified on qa-scratch 2026-09-23.
+  objectUsage: z.string().default("KnowledgeArticleVersion").describe("Object to categorize: 'KnowledgeArticleVersion' (Knowledge articles)"),
   description: z.string().optional().describe("Group description"),
   categories: z.array(z.object({
     name: z.string().min(1).describe("Category API name"),

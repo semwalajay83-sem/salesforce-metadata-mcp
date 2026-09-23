@@ -77,6 +77,20 @@ check("Network exists (CLI)", net.length === 1, JSON.stringify(net));
 r = await s.call("sf_create_experience_site", { siteName: `QASite${T}`, label: `QA Site ${T}`, urlPathPrefix: `qa${T}`, template: "LWR" }, 180000);
 check("second call is idempotent", r.ok && r.payload?.created === false, r.ok ? r.payload?.message : r.error);
 
+console.log("4. data category group defaults to a categorizable entity");
+r = await s.call("sf_create_data_category", { fullName: `QADc${T}`, label: `QA DC ${T}`, categories: [{ name: `QACat${T}`, label: `QA Cat ${T}` }] });
+check("default call succeeds (KnowledgeArticleVersion)", r.ok, r.ok ? "" : r.error);
+
+console.log("5. service territory resolves its operating hours");
+const ohName = `QA OH ${T}`;
+r = await s.call("sf_create_service_territory", { territoryName: `QAStX${T}`, label: `QA STX ${T}`, operatingHoursName: "No Such Hours" });
+check("unknown operating hours is refused by name", !r.ok && /No Such Hours|has none/.test(r.error), r.error?.slice(0, 120));
+execSync(`sf data create record -o ${ALIAS} -s OperatingHours -v "Name='${ohName}' TimeZone='America/Los_Angeles'"`, { stdio: "ignore" });
+r = await s.call("sf_create_service_territory", { territoryName: `QASt${T}`, label: `QA ST ${T}`, operatingHoursName: ohName });
+check("tool succeeds", r.ok, r.ok ? "" : r.error);
+const st = soql(`SELECT Name, OperatingHours.Name FROM ServiceTerritory WHERE Name = 'QA ST ${T}'`);
+check("territory linked to those hours (CLI)", st.length === 1 && st[0].OperatingHours?.Name === ohName, JSON.stringify(st.map((x) => x.OperatingHours?.Name)));
+
 s.stop();
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

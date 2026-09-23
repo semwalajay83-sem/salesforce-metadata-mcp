@@ -304,7 +304,7 @@ limit: max records per object (default: 20, max: 200)`,
 
 fullName: data category group API name
 label: display label
-objectUsage: object type to categorize (e.g. 'KnowledgeArticle')
+objectUsage: object type to categorize (default 'KnowledgeArticleVersion', the Knowledge article entity)
 categories: top-level categories with optional sub-categories`,
     inputSchema: CreateDataCategorySchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },

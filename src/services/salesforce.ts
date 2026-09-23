@@ -5456,11 +5456,26 @@ export async function createServiceTerritory(auth: SalesforceAuth, params: Recor
         if (params.state) payload["State"] = params.state;
         if (params.country) payload["Country"] = params.country;
         if (params.postalCode) payload["PostalCode"] = params.postalCode;
-        if (params.operatingHoursName) {
-            const ohResp = await client.get(`/query?q=${encodeURIComponent(`SELECT Id FROM OperatingHours WHERE Name = '${params.operatingHoursName.replace(/'/g,"\\'")}' LIMIT 1`)}`);
-            const ohId = (ohResp.data as any).records?.[0]?.Id;
-            if (ohId) payload["OperatingHoursId"] = ohId;
+        // Salesforce requires OperatingHoursId. A name that matched nothing used to be dropped
+        // silently, and omitting it was allowed, so both ended in REQUIRED_FIELD_MISSING. Resolve it
+        // or say what exists; with no name, use the org's operating hours only if there is exactly
+        // one set. Fixed 2026-09-23.
+        const ohResp = await client.get(`/query?q=${encodeURIComponent("SELECT Id, Name FROM OperatingHours ORDER BY Name LIMIT 50")}`);
+        const hours: Array<{ Id: string; Name: string }> = (ohResp.data as any).records ?? [];
+        const named = params.operatingHoursName ? hours.find((h) => h.Name === params.operatingHoursName) : undefined;
+        const oh = named ?? (!params.operatingHoursName && hours.length === 1 ? hours[0] : undefined);
+        if (!oh) {
+            const list = hours.map((h) => `'${h.Name}'`).join(", ");
+            return {
+                success: false,
+                message: hours.length === 0
+                    ? "A service territory needs operating hours, and this org has none. Create an OperatingHours record (Setup → Operating Hours) first, then pass its name as operatingHoursName."
+                    : params.operatingHoursName
+                        ? `No operating hours named '${params.operatingHoursName}'. Available: ${list}.`
+                        : `A service territory needs operating hours. Pass operatingHoursName — available: ${list}.`,
+            };
         }
+        payload["OperatingHoursId"] = oh.Id;
         const resp = await client.post("/sobjects/ServiceTerritory", payload);
         return { success: true, fullName: (resp.data as any).id, created: true, message: `Service Territory '${params.label}' created with ID ${(resp.data as any).id}.` };
     } catch (err) {
@@ -7503,7 +7518,7 @@ export async function createDataCategory(auth: SalesforceAuth, params: Record<st
         const xml = `<met:metadata xsi:type="met:DataCategoryGroup" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <met:fullName>${x(params.fullName)}</met:fullName>
     <met:label>${x(params.label)}</met:label>
-    <met:objectUsage><met:object>${x(params.objectUsage ?? "KnowledgeArticle")}</met:object></met:objectUsage>
+    <met:objectUsage><met:object>${x(params.objectUsage ?? "KnowledgeArticleVersion")}</met:object></met:objectUsage>
     ${params.description ? `<met:description>${x(params.description)}</met:description>` : ""}
     ${categoriesXml}
 </met:metadata>`;
