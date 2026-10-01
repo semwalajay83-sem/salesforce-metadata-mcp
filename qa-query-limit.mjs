@@ -167,6 +167,18 @@ console.log("\nE. aggregate and OFFSET queries must not be broken by the cap");
   const agg = await callTool("sf_query_records", { query: "SELECT COUNT() FROM EntityDefinition", limit: 5 });
   check("COUNT() query still succeeds", agg.success === true, JSON.stringify(agg).slice(0, 160));
 
+  // Reported 2026-10-01: only the bare COUNT() was exempt, so these got a LIMIT appended and
+  // Salesforce rejected them ("Non-grouped query that uses overall aggregate functions cannot also use LIMIT").
+  for (const q of [
+    "SELECT COUNT(Id) FROM Contact WHERE Email != null",
+    "SELECT COUNT(Id) cnt, MAX(CreatedDate) newest FROM Account",
+    "SELECT SUM(Amount), AVG(Amount) FROM Opportunity",
+    "SELECT COUNT_DISTINCT(AccountId) FROM Contact",
+  ]) {
+    const r = await callTool("sf_query_records", { query: q, limit: 5 });
+    check(`non-grouped aggregate succeeds: ${q}`, r.success === true, JSON.stringify(r).slice(0, 200));
+  }
+
   // GROUP BY aggregates are documented on the tool and take a different path from COUNT(): they
   // return many rows, so they ARE capped, and appending LIMIT to them must stay valid SOQL.
   const grouped = await callTool("sf_query_records", {

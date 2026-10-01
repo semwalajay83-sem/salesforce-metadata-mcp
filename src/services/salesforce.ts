@@ -4673,6 +4673,15 @@ function planQueryCap(rawSoql: string, requested: number | undefined): QueryCapP
     if (/^\s*SELECT\s+COUNT\s*\(\s*\)/i.test(soql)) {
         return { soql, appliedLimit: null, limitSource: "none (aggregate query)" };
     }
+    // Same for COUNT(Id), SUM(x), MAX(x)... without GROUP BY. Reported 2026-10-01: only the bare COUNT()
+    // was exempt, so `SELECT COUNT(Id) FROM Contact` got a LIMIT and Salesforce rejected it ("Non-grouped
+    // query that uses overall aggregate functions cannot also use LIMIT"). Parenthesised subqueries are
+    // blanked first so a child-relationship subquery cannot make the outer query look grouped or not.
+    const outer = soql.replace(/\((?:[^()]|\([^()]*\))*\)/g, (m) => (/^\(\s*SELECT\b/i.test(m) ? "()" : m));
+    const selectList = outer.match(/^\s*SELECT\s+([\s\S]*?)\s+FROM\s/i)?.[1] ?? "";
+    if (/\b(?:COUNT|COUNT_DISTINCT|SUM|AVG|MIN|MAX)\s*\(/i.test(selectList) && !/\bGROUP\s+BY\b/i.test(outer)) {
+        return { soql, appliedLimit: null, limitSource: "none (aggregate query)" };
+    }
 
     // A trailing FOR UPDATE / FOR VIEW / FOR REFERENCE has to stay last, so peel it off and put it
     // back after the LIMIT rather than appending LIMIT behind it and producing invalid SOQL.
