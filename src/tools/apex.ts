@@ -129,13 +129,13 @@ export function registerApexTools(server: McpServer): void {
     "sf_execute_anonymous_apex",
     {
       title: "Execute Anonymous Apex",
-      description: `Executes anonymous Apex code in the Salesforce org using the Tooling API executeAnonymous endpoint. Returns compile errors, runtime exceptions, and debug log output. Use for one-off data fixes, testing Apex snippets, creating test data, running utilities, or debugging. Code runs in the context of the authenticated user.`,
+      description: `Executes anonymous Apex code in the Salesforce org through the SOAP Apex API. Returns compile errors, runtime exceptions, and System.debug() output as 'debugOutput' (also on a runtime exception, for lines written before it). Set debugLog='full' for the raw debug log. Use for one-off data fixes, testing Apex snippets, creating test data, running utilities, or debugging. Code runs in the context of the authenticated user.`,
       inputSchema: ExecuteAnonymousApexSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async (params) => {
       const auth = await getAuth();
-      const result = await executeAnonymousApex(auth, params.apexCode);
+      const result = await executeAnonymousApex(auth, params.apexCode, params.debugLog);
       return resultContent(result);
     }
   );

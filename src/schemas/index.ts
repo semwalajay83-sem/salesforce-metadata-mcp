@@ -985,6 +985,7 @@ export const RunApexTestsSchema = z.object({
 
 export const ExecuteAnonymousApexSchema = z.object({
   apexCode: z.string().min(1).max(1_000_000).describe("Anonymous Apex code to execute, e.g. 'System.debug(Date.today());'"),
+  debugLog: z.enum(["userDebug", "full", "none"]).default("userDebug").describe("What to return from the debug log. 'userDebug' (default): only System.debug() output, as 'debugOutput' lines. 'full': also the raw log (Apex at FINEST, capped at 50,000 chars). 'none': no log."),
 }).strict();
 
 // ─── LWC DEVELOPMENT ─────────────────────────────────────────────────────────
