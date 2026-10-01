@@ -127,7 +127,11 @@ Before publishing (only when user asks):
 - Root `<Bot>` level: `<agentType>`, `<label>`, `<type>`, `<description>`, `<botMlDomain>`, `<logPrivateConversationData>`, `<richContentEnabled>`, `<sessionTimeout>`
 - `<botVersions>` level (inside Bot): `<fullName>`, `<botDialogs>`, `<citationsEnabled>`, `<company>`, `<entryDialog>`, `<role>`, `<systemPrompt>`, `<toneType>`, `<intentDisambiguationEnabled>`, `<smallTalkEnabled>`, etc.
 - `<botDialogs>` level (inside botVersions): `<developerName>`, `<label>`, `<isPlaceholderDialog>`, `<showInFooterMenu>`
-- `<agentType>` valid value: `EinsteinServiceAgent` — verified from real org retrieve 2026-06-17. EinsteinCopilot and Default are both invalid.
+- `<agentType>` is the **GenAiAgentType** enum (measured 2026-10-01): EinsteinServiceAgent, AgentforceEmployeeAgent,
+  Employee, EinsteinSDR, SalesEinsteinCoach. `sf_create_agent`'s `agentType` maps Employee (default) →
+  AgentforceEmployeeAgent (what @salesforce/agents uses), Service → EinsteinServiceAgent. It used to be hard-coded
+  to EinsteinServiceAgent, so every "internal" agent was a Service Agent. **Immutable after creation** ("AgentType
+  can't be updated") — re-runs read BotDefinition.AgentType and keep it. Pinned by `qa-agent-type.mjs`.
 - `<type>` valid value: `InternalCopilot` — verified from real org retrieve 2026-06-17. EinsteinCopilot is invalid.
 - `<systemPrompt>` is NOT a botVersions field — it was listed here in error and broke every deploy that
   used `sf_create_agent`'s old `instructions` param. Corrected 2026-07-30 from a real org retrieve.

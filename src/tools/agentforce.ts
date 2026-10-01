@@ -112,20 +112,32 @@ async function probeAgentActionCapability(auth: SalesforceAuth): Promise<{ suppo
   }
 }
 
+// Bot <agentType> per sf_create_agent `agentType`. Reported 2026-10-01: the tool hard-coded
+// EinsteinServiceAgent, so every "internal" agent came out as a customer-facing Service Agent, and
+// Salesforce refuses to change it afterwards ("AgentType can't be updated" — measured). The enum is
+// GenAiAgentType; measured valid in demo-org: EinsteinServiceAgent, AgentforceEmployeeAgent, Employee,
+// EinsteinSDR, SalesEinsteinCoach. AgentforceEmployeeAgent is the value Salesforce's own @salesforce/agents
+// uses for employee agents. <type> stays InternalCopilot for both: Salesforce accepts either Copilot
+// type with either agentType, and InternalCopilot is what the original real-org retrieve showed.
+const BOT_AGENT_TYPE: Record<"Employee" | "Service", string> = {
+  Employee: "AgentforceEmployeeAgent",
+  Service: "EinsteinServiceAgent",
+};
+
 async function buildBotDeployZip(params: {
-  agentName: string; label: string; description?: string;
+  agentName: string; label: string; description?: string; agentType: string;
   company?: string; tone?: string; role?: string; plannerName?: string; apiVersion: string;
 }): Promise<string> {
   // MDAPI format: BotVersion is embedded as <botVersions> inside the single .bot file
   // Ground truth values retrieved from real org (2026-06-17, re-verified 2026-07-30):
-  //   agentType = EinsteinServiceAgent (BotType enum; EinsteinCopilot and Default are both invalid)
-  //   type      = InternalCopilot      (GenAiAgentType enum; EinsteinCopilot is invalid)
+  //   agentType = GenAiAgentType enum (see BOT_AGENT_TYPE; EinsteinCopilot and Default are invalid)
+  //   type      = InternalCopilot (EinsteinCopilot is invalid)
   // BotVersion has NO systemPrompt field — deploying one fails with "Element systemPrompt invalid
   // at this location in type BotVersion". Agent guidance belongs on the topics
   // (sf_create_agent_topic's `instructions`), not on the Bot. <role> is the valid persona field.
   const botXml = `<?xml version="1.0" encoding="UTF-8"?>
 <Bot xmlns="${SF_NS}">
-  <agentType>EinsteinServiceAgent</agentType>
+  <agentType>${x(params.agentType)}</agentType>
   <botMlDomain>
     <label>${x(params.label)}</label>
     <name>${x(params.agentName)}</name>
@@ -202,8 +214,20 @@ export function registerAgentforceTools(server: McpServer): void {
             });
           }
         }
+        // AgentType is immutable once the Bot exists, so a re-run (the step-5 plannerName call) must
+        // send the existing value back — defaulting it would make every re-run of a Service agent fail.
+        const existing = await createClient(auth).get<{ records: Array<{ AgentType: string | null }> }>(
+          `/query?q=${encodeURIComponent(`SELECT AgentType FROM BotDefinition WHERE DeveloperName = '${params.agentName}'`)}`
+        ).catch(() => null);
+        const existingType = existing?.data.records[0]?.AgentType ?? null;
+        const requestedType = params.agentType ? BOT_AGENT_TYPE[params.agentType] : undefined;
+        if (existingType && requestedType && existingType !== requestedType) {
+          return resultContent({ success: false, message: `Agent '${params.agentName}' already exists with agent type '${existingType}', and Salesforce cannot change an agent's type after creation ("AgentType can't be updated"). To get a ${params.agentType} agent, create a new agent under a different agentName. To update this one, omit agentType.` });
+        }
+        const agentType = existingType ?? requestedType ?? BOT_AGENT_TYPE.Employee;
         const base64Zip = await buildBotDeployZip({
           agentName: params.agentName,
+          agentType,
           label: params.label ?? params.agentName,
           description: params.description,
           company: params.company,
@@ -218,7 +242,7 @@ export function registerAgentforceTools(server: McpServer): void {
         if (params.plannerName) {
           return resultContent({ success: true, fullName: params.agentName, created: true, message: `Agent '${params.agentName}' updated and linked to planner '${params.plannerName}'. The agent→planner wiring is now complete. Activate the agent in Setup → Agentforce to make it live.` });
         }
-        return resultContent({ success: true, fullName: params.agentName, created: true, message: `Agent shell '${params.agentName}' created (step 1 of 5 complete). THE AGENT IS NOT FUNCTIONAL YET — do not report success to the user. REQUIRED NEXT ACTIONS (call these tools now, in order, without stopping): [2] sf_create_agent_action — one call per flow or Apex action. [3] sf_create_agent_topic — pass ALL action API names in the 'actions' array. [4] sf_create_agent_planner — deploys the planner. [5] sf_create_agent again with agentName='${params.agentName}' and plannerName='${params.agentName}' — writes the agent→planner link, which lives on the Bot and cannot be set by the planner itself. Only after step 5 is the agent usable. Proceed immediately.` });
+        return resultContent({ success: true, fullName: params.agentName, created: true, message: `Agent shell '${params.agentName}' created as agent type ${agentType} (step 1 of 5 complete). THE AGENT IS NOT FUNCTIONAL YET — do not report success to the user. REQUIRED NEXT ACTIONS (call these tools now, in order, without stopping): [2] sf_create_agent_action — one call per flow or Apex action. [3] sf_create_agent_topic — pass ALL action API names in the 'actions' array. [4] sf_create_agent_planner — deploys the planner. [5] sf_create_agent again with agentName='${params.agentName}' and plannerName='${params.agentName}' — writes the agent→planner link, which lives on the Bot and cannot be set by the planner itself. Only after step 5 is the agent usable. Proceed immediately.` });
       } catch (err: unknown) {
         return resultContent({ success: false, message: `Agent creation error: ${err instanceof Error ? err.message : String(err)}. Check that Agentforce is enabled in your org (Setup → Agentforce).` });
       }
