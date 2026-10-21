@@ -829,6 +829,19 @@ function nullOperatorXml(operator: string, rightValue?: string): { operator: str
   return { operator: "IsNull", booleanValue: String(isNull) };
 }
 
+/**
+ * Name of the formula resource generated for a fieldUpdate that carries a formula.
+ *
+ * Flow resource names may not contain consecutive underscores or end with one, so the field's
+ * `__c` suffix can't be embedded as-is — `FU_End_Date__c_Formula` is rejected at deploy with
+ * "The Flow Formula API Name can only contain underscores and alphanumeric characters". Shared by
+ * both flow builders so the definition and the assignment's reference can never disagree.
+ */
+export function fieldUpdateFormulaName(field: string): string {
+  const safe = field.replace(/[^A-Za-z0-9_]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
+  return `FU_${safe}_Formula`;
+}
+
 function buildFlowXml(params: {
   label: string; apiName: string; description?: string;
   flowType: string; triggerObject?: string; triggerType?: string;
@@ -1222,7 +1235,7 @@ function buildFlowXml(params: {
     (params.fieldUpdates ?? [])
     .filter(fu => fu.formula)
     .map(fu => ({
-      name: `FU_${fu.field.replace(/[^A-Za-z0-9_]/g, "_")}_Formula`,
+      name: fieldUpdateFormulaName(fu.field),
       dataType: fu.formulaDataType ?? "String",
       expression: fu.formula!,
     }));
@@ -1237,7 +1250,7 @@ function buildFlowXml(params: {
         <met:inputAssignments>
           <met:field>${x(fu.field)}</met:field>
           <met:value>${fu.formula
-            ? `<met:elementReference>FU_${x(fu.field.replace(/[^A-Za-z0-9_]/g, "_"))}_Formula</met:elementReference>`
+            ? `<met:elementReference>${x(fieldUpdateFormulaName(fu.field))}</met:elementReference>`
             : `<met:stringValue>${x(fu.value ?? "")}</met:stringValue>`}
           </met:value>
         </met:inputAssignments>`).join("\n")}
@@ -1621,7 +1634,7 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
     (params.fieldUpdates ?? [])
     .filter(fu => fu.formula)
     .map(fu => ({
-      name: `FU_${fu.field.replace(/[^A-Za-z0-9_]/g, "_")}_Formula`,
+      name: fieldUpdateFormulaName(fu.field),
       dataType: fu.formulaDataType ?? "String",
       expression: fu.formula!,
     }));
@@ -1635,7 +1648,7 @@ export function buildFlowDeployXml(params: Parameters<typeof buildFlowXml>[0]): 
     <inputAssignments>
       <field>${x(fu.field)}</field>
       <value>${fu.formula
-        ? `<elementReference>FU_${x(fu.field.replace(/[^A-Za-z0-9_]/g, "_"))}_Formula</elementReference>`
+        ? `<elementReference>${x(fieldUpdateFormulaName(fu.field))}</elementReference>`
         : `<stringValue>${x(fu.value ?? "")}</stringValue>`}
       </value>
     </inputAssignments>`).join("\n")}

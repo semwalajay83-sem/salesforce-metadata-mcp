@@ -171,13 +171,11 @@ export function registerMetadataTools(server: McpServer): void {
             }
           }
         }
-        const flowXml = buildFlowDeployXml({
-          label: params.label, apiName: params.apiName, description: params.description,
-          flowType: params.flowType, triggerObject: params.triggerObject, triggerType: params.triggerType,
-          triggerFilterFormula: params.triggerFilterFormula, fieldUpdates: params.fieldUpdates,
-          elements: params.elements, variables: params.variables, status: params.status ?? "Draft",
-          submitForApprovalProcessName: params.submitForApprovalProcessName,
-        });
+        // Pass every schema field through. This used to be a hand-picked list that silently dropped
+        // formulas, constants, textTemplates, recordTriggerType and the schedule fields — the builder
+        // supported all of them, but the tool never handed them over, so a flow referencing a
+        // formula deployed as InvalidDraft and create/update/delete trigger choices were ignored.
+        const flowXml = buildFlowDeployXml({ ...params, status: params.status ?? "Draft" });
         const base64Zip = await buildGenericDeployZip([], API_VERSION, [{ type: "Flow", name: params.apiName, xml: flowXml }]);
         const deployId = await deployZip(auth, base64Zip, { rollbackOnError: true });
         const deployResult = await pollDeployStatus(auth, deployId, 10 * 60 * 1000);
