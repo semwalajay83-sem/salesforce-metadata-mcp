@@ -135,6 +135,8 @@ try {
   fail++;
   console.log(`  FAIL harness: ${e.message}`);
 } finally {
+  // An active flow version can't be deleted, and the object can't be deleted while a flow uses it.
+  try { await srv.call("sf_deactivate_flow", { flowApiName: FLOW_A }, 300000); } catch { /* cleanup is best effort */ }
   srv.stop();
   console.log("cleanup");
   cleanup();
