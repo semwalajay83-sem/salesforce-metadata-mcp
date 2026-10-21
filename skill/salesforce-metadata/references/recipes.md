@@ -24,7 +24,9 @@ access). Tool names are given so you can call them directly or via `sf_call_tool
 
 1. `sf_load_toolset` → `flows` (the flow tool is large and not loaded by default).
 2. Confirm trigger object, before-save vs after-save, entry conditions, and run-once-per-change.
-3. Prefer before-save for same-record field updates (faster, no extra DML).
+3. Prefer before-save (`triggerType: RecordBeforeSave`) for same-record field updates — faster, no
+   extra DML. `sf_create_flow`'s `fieldUpdates` (including `formula` values like `TODAY()`) is valid
+   in a before-save flow: it activates and runs. Don't switch to after-save "to be safe".
 4. `sf_create_flow`, then check for errors. `status` defaults to `Draft` — ask before setting it to
    `Active` (or activating afterwards). Flows used by Agentforce actions MUST be `Active`.
 
