@@ -1,5 +1,43 @@
 # Changelog
 
+## [3.2.1] - 2026-10-21
+
+Bug-fix release. Every fix below was found by real use — a bug report or live agent testing against
+a Developer Edition org — and each is pinned by a regression script.
+
+### Changed: `sf_create_agent` now creates Employee agents by default
+`agentType` was hard-coded to `EinsteinServiceAgent`, so every agent came out customer-facing — and
+Salesforce refuses to change an agent's type afterwards. New `agentType` parameter: `Employee`
+(default, `AgentforceEmployeeAgent`) or `Service` (`EinsteinServiceAgent`). **If you relied on the
+old behaviour, pass `agentType: "Service"`.** Re-running on an existing agent keeps its type; asking
+to change it is refused with an explanation. Pinned by `qa-agent-type.mjs`.
+
+### Fixed: `sf_create_flow`
+- **Dropped parameters.** The tool passed a hand-picked subset of its inputs to the flow builder,
+  silently discarding `formulas`, `constants`, `textTemplates`, `recordTriggerType` and the schedule
+  fields. A flow that referenced a formula deployed as `InvalidDraft`, and create/update/delete
+  trigger choices were ignored. Every schema field is now passed through.
+- **Invalid formula names.** A `fieldUpdates` entry with a `formula` on a custom field generated a
+  resource named like `FU_End_Date__c_Formula`, which Salesforce rejects (consecutive underscores),
+  so every "set a custom field to a formula" flow failed to deploy. Both flow builders now share one
+  name helper.
+- New `qa-flow-tool-params.mjs` (20 checks, including a runtime check that the flow really updates
+  the record) goes through `tools/call`, so it catches dispatch bugs the builder-level suite cannot.
+  `qa-flow-comprehensive.mjs`: 144 passed, 0 failed.
+
+### Fixed: `sf_query_records` with aggregates
+A non-grouped aggregate such as `SELECT COUNT(Id) FROM Account` failed with "Non-grouped query that
+uses overall aggregate functions cannot also use LIMIT", because the guardrail `LIMIT` was appended
+to it. Non-grouped aggregates are no longer rewritten.
+
+### Fixed: `sf_execute_anonymous_apex` returns `System.debug` output
+The REST execute-anonymous endpoint carries no debug log, so the promised debug output never
+appeared. The tool now captures it (`debugLog: "userDebug"` by default, `"full"` or `"none"`).
+
+### Added: agent skill
+`skill/salesforce-metadata/` — a `SKILL.md` with setup, tool-discovery, a safe change workflow and
+recipes, for Claude Code and other skill-aware agents. Tested live on Sonnet and Haiku.
+
 ## [3.2.0] - 2026-09-23
 
 A full-surface QA release. Every one of the 233 tools was called individually over real MCP traffic

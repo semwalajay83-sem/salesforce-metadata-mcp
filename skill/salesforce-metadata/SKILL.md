@@ -12,6 +12,8 @@ reach for, in what order, and what to check so changes land correctly the first 
 
 Look for tools named `sf_*` (e.g. `sf_describe_object`, `sf_find_tool`). If none exist, the server is
 not installed — give the user the setup in [references/setup.md](references/setup.md) and stop.
+This skill needs server version 3.2.1 or later; if `sf_create_agent` has no `agentType` parameter,
+the server is older — ask the user to update (`npx -y salesforce-metadata-mcp@latest`).
 
 ## 1. Finding the right tool (lazy toolsets)
 

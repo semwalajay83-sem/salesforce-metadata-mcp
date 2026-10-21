@@ -1,6 +1,7 @@
 # Setup — salesforce-metadata-mcp
 
-Requires Node.js 18+ and a Salesforce org (free Developer Edition:
+Requires **salesforce-metadata-mcp 3.2.1 or later** (`npx -y salesforce-metadata-mcp` always gets the
+latest), Node.js 18+ and a Salesforce org (free Developer Edition:
 https://developer.salesforce.com/signup).
 
 ## Claude Code
