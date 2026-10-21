@@ -1,6 +1,6 @@
 ---
 name: salesforce-metadata
-description: Build and configure a Salesforce org in natural language through the salesforce-metadata-mcp server — custom objects, fields, validation rules, flows, Apex, LWC, permission sets, reports, Agentforce agents, OmniStudio and DevOps Center. Use when the user asks to create, change, inspect, audit or deploy anything in a Salesforce org, or mentions SOQL, metadata, a sandbox, a scratch org or Agentforce.
+description: Build, inspect and query a Salesforce org in natural language through the salesforce-metadata-mcp server — custom objects, fields, validation rules, flows, Apex, LWC, permission sets, reports, records and data, Agentforce agents, OmniStudio and DevOps Center. Use whenever the user mentions Salesforce or their org, or asks to create, change, delete, inspect, query, summarise, audit or deploy anything in it — including SOQL, records, metadata, permissions, a sandbox, a scratch org or Agentforce.
 ---
 
 # Salesforce Metadata (salesforce-metadata-mcp)
@@ -29,6 +29,10 @@ security, lwc, agentforce, omnistudio, devops, reports…) are one call away:
 
 Never tell the user a capability is missing until `sf_find_tool` has come back empty.
 
+**Prefer a dedicated tool over hand-written XML.** Before falling back to `sf_deploy_metadata` with
+raw XML, run `sf_find_tool` for the thing you're building (e.g. "permission set", "record type",
+"list view"). Dedicated tools validate input and handle Salesforce quirks that raw XML gets wrong.
+
 ## 2. Standard workflow for any change
 
 1. **Inspect first.** `sf_describe_object` on the target object (fields, types, API names, record
@@ -39,10 +43,24 @@ Never tell the user a capability is missing until `sf_find_tool` has come back e
    or permission sets get access.
 3. **Create in dependency order:** object → fields → record types / picklist values → validation
    rules → layouts / pages → automation (flows, triggers) → permission sets → reports.
-4. **Verify.** Re-describe the object or query the result. For async deploys, poll
-   `sf_check_deploy_status` until it finishes; report failures with the component and message.
+4. **Verify — do not skip this.** A "success" response is not proof. After creating, re-read what
+   you built (`sf_describe_object`, `sf_retrieve_metadata` or a query) and say what you checked. For
+   async deploys, poll `sf_check_deploy_status` until it finishes; report failures with the
+   component and message.
 5. **Grant access.** A new field is invisible to users without field-level security. Say so, and
    offer a permission set (load `security`) rather than editing profiles.
+
+**Field-level security gotcha (applies to reading too).** `sf_describe_object` and SOQL only show
+fields the *connected user* has field-level security on. So "no custom fields" or `No such column`
+does not mean a field doesn't exist — never state that it doesn't. Confirm with
+`sf_retrieve_metadata` on the object before saying a field is missing, and mention FLS as the likely
+reason it's hidden.
+
+A newly created custom field does NOT appear in
+`sf_describe_object`, and SOQL on it fails with `No such column`, until the *connected user* has
+field-level security on it — even for a System Administrator. This is not a cache delay; waiting
+will not fix it. Verify new fields with `sf_retrieve_metadata` instead, and tell the user that
+granting access (e.g. assigning a permission set to themselves) makes them queryable.
 
 ## 3. Safety rules (always)
 
