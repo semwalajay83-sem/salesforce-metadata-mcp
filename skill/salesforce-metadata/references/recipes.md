@@ -30,10 +30,12 @@ access). Tool names are given so you can call them directly or via `sf_call_tool
 
 ## Apex class with test
 
-1. Load `apex`. Check for existing classes with `sf_find_tool` → read tools before creating duplicates.
-2. Create the class, then a test class that asserts behaviour (not just coverage). Bulkify: no SOQL
-   or DML inside loops.
-3. Run the tests and report pass/fail and coverage. Production deploys need 75% org-wide coverage.
+1. `sf_load_toolset` → `apex`. Use `sf_get_apex_class` to check the name isn't already taken.
+2. `sf_create_apex_class` for the class, then `sf_create_apex_test_class` for a test class that
+   asserts behaviour (not just coverage). Bulkify: no SOQL or DML inside loops. Do NOT hand-build
+   ApexClass XML for `sf_deploy_metadata` — it needs the class body as a separate file and fails.
+3. `sf_run_apex_tests`, then report pass/fail and coverage (`sf_get_apex_test_results`).
+   Production deploys need 75% org-wide coverage.
 
 ## Permission set
 

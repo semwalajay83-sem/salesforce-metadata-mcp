@@ -24,10 +24,19 @@ security, lwc, agentforce, omnistudio, devops, reports…) are one call away:
 2. **Know the group?** Call `sf_load_toolset` (see `sf_list_toolsets` for the 34 groups). Load
    `flows` before building any Flow.
 3. **Tool still not callable after loading?** Some clients don't refresh their tool list. Do not
-   retry or give up — call `sf_tool_schema` to get the schema, then `sf_call_tool` with
-   `{ name, arguments }`. It runs the same validation and safety checks as a direct call.
+   retry or give up — call `sf_tool_schema` with `{ "tool": "<tool name>" }` to get the schema,
+   then `sf_call_tool` with `{ "tool": "<tool name>", "arguments": { ... } }`. It runs the same
+   validation and safety checks as a direct call.
+
+**Don't guess parameter names.** If you're not certain of a tool's inputs (e.g. `sf_retrieve_metadata`
+takes `metadataType` + `componentName`), call `sf_tool_schema` first — one cheap call beats a
+validation error and a retry.
 
 Never tell the user a capability is missing until `sf_find_tool` has come back empty.
+
+**Use the MCP tools, not a shell.** Do the work through `sf_*` tools — don't write local source
+files or switch to the Salesforce CLI. A shell deploy goes to whatever org the CLI defaults to, which
+may not be the org the user connected this server to.
 
 **Prefer a dedicated tool over hand-written XML.** Before falling back to `sf_deploy_metadata` with
 raw XML, run `sf_find_tool` for the thing you're building (e.g. "permission set", "record type",
@@ -38,9 +47,12 @@ raw XML, run `sf_find_tool` for the thing you're building (e.g. "permission set"
 1. **Inspect first.** `sf_describe_object` on the target object (fields, types, API names, record
    types). Use `sf_query_records` (SOQL) to look at real data when the change depends on it.
    Never guess an API name — custom names end in `__c`, and managed packages add a namespace prefix.
-2. **Restate the requirement** in one or two lines (object, fields, types, who sees it) and confirm
-   anything ambiguous before writing — e.g. picklist vs. text, required vs. optional, which profiles
-   or permission sets get access.
+2. **Restate the requirement** in one or two lines (object, fields, types, who sees it). If the user
+   left a design choice open — field type, picklist values, required or not, default value, who gets
+   access — **stop and ask before creating anything**, offering a sensible proposal they can accept
+   with one word ("I'd make it a picklist: High / Medium / Low, optional, no default — OK?"). Metadata
+   is shared by everyone in the org and awkward to change once data exists, so never fill these gaps
+   silently. Only proceed with your own defaults if the user explicitly says to.
 3. **Create in dependency order:** object → fields → record types / picklist values → validation
    rules → layouts / pages → automation (flows, triggers) → permission sets → reports.
 4. **Verify — do not skip this.** A "success" response is not proof. After creating, re-read what
